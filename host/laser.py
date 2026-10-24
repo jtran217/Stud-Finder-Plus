@@ -1,14 +1,7 @@
-"""Laser line: find it in the camera image, learn steps -> inches, aim at studs.
+"""Laser line: find it on the wall, map motor steps to inches, aim at studs.
 
-The motor only knows step numbers, so the camera closes the loop:
-  1. LaserDetector  finds the red vertical line and returns its x in wall inches.
-  2. LaserCalibration  moves the motor to ~10 step positions, records where the
-     line landed at each, and builds a steps <-> inches lookup table.
-  3. Aimer  converts a stud's inches to steps, moves there, measures where the
-     line actually landed, and nudges by the error (1-2 extra moves).
-
-FakeRig simulates the motor + laser (draws a red line into the frame) so all
-of this can be tested without hardware.
+The camera closes the loop since the stepper only knows step counts. FakeRig
+stands in for the motor + laser when testing without hardware.
 """
 import json
 import math
@@ -20,31 +13,25 @@ import numpy as np
 
 LASER_CALIB_PATH = Path(__file__).parent / "laser_calib.json"
 
-# Where messages go; app.py points this at its own log so the web page sees them.
-log = print
+log = print   # app.py swaps this for its own logger
 
-
-# ---------------------------------------------------------------- detection --
 
 class LaserDetector:
-    """Finds a vertical red laser line on the wall.
-
-    The frame is warped to a straight-on view of the wall (PX_PER_IN pixels per
-    inch), red pixels are counted per column, and the strongest column is the
-    line. Dimming the room or the camera exposure makes the laser stand out.
-    """
+    """Finds the vertical red line. Works on a straight-on warp of the wall
+    and picks the column with the most red pixels. Dim the room if it can't
+    see the laser."""
 
     PX_PER_IN = 20
-    MARGIN_IN = 2.0      # also look a little past the left/right crosses
-    S_MIN = 90           # min saturation for "red"
-    V_MIN = 120          # min brightness for "red"
-    MIN_FRAC = 0.15      # line must cover at least this much of the wall height
+    MARGIN_IN = 2.0     # look a bit past the corner crosses
+    S_MIN = 90
+    V_MIN = 120
+    MIN_FRAC = 0.15     # line has to cover this much of the wall height
 
     def __init__(self):
-        self.mask = None   # last red mask in wall view, for debugging
+        self.mask = None
 
     def find(self, frame, calib):
-        """Return the laser line's x in wall inches, or None."""
+        """x of the laser line in wall inches, or None."""
         if not calib.ready:
             return None
         (x0, y0), (x1, y1) = calib.wall_in.min(0), calib.wall_in.max(0)
@@ -52,167 +39,264 @@ class LaserDetector:
         x1 += self.MARGIN_IN
         p = self.PX_PER_IN
         w, h = int((x1 - x0) * p), int((y1 - y0) * p)
-        # pixels -> inches (calib.H), then inches -> wall-view pixels
-        S = np.array([[p, 0, -x0 * p], [0, p, -y0 * p], [0, 0, 1]], dtype=np.float64)
-        wall = cv2.warpPerspective(frame, S @ calib.H, (w, h))
+        to_wall = np.array([[p, 0, -x0 * p], [0, p, -y0 * p], [0, 0, 1]]) @ calib.H
+        wall = cv2.warpPerspective(frame, to_wall, (w, h))
 
         hsv = cv2.cvtColor(wall, cv2.COLOR_BGR2HSV)
-        lo1, hi1 = (0, self.S_MIN, self.V_MIN), (10, 255, 255)
-        lo2, hi2 = (170, self.S_MIN, self.V_MIN), (179, 255, 255)
-        mask = cv2.inRange(hsv, lo1, hi1) | cv2.inRange(hsv, lo2, hi2)
+        # red wraps around hue 0
+        mask = (cv2.inRange(hsv, (0, self.S_MIN, self.V_MIN), (10, 255, 255)) |
+                cv2.inRange(hsv, (170, self.S_MIN, self.V_MIN), (179, 255, 255)))
         self.mask = mask
 
-        cols = mask.sum(axis=0).astype(np.float64) / 255
+        cols = mask.sum(axis=0) / 255.0
         peak = int(cols.argmax())
         if cols[peak] < self.MIN_FRAC * h:
             return None
-        # Sub-pixel center: weighted average of columns within 0.5 in of the peak.
+        # weighted center over +-0.5 in around the peak for sub-pixel x
         a, b = max(peak - p // 2, 0), min(peak + p // 2 + 1, w)
-        weights = cols[a:b]
-        cx = float((np.arange(a, b) * weights).sum() / weights.sum())
+        cx = float((np.arange(a, b) * cols[a:b]).sum() / cols[a:b].sum())
         return float(x0 + (cx + 0.5) / p)
 
 
-# --------------------------------------------------------------- settling ----
+class Stepper:
+    """Sends G commands and remembers where we told the motor to go, so we
+    can guess how long a move takes."""
+
+    STEPS_PER_S = 700   # matches STEP_US in the firmware
+
+    def __init__(self, send):
+        self.send = send
+        self.pos = None   # unknown until the first move
+
+    def move(self, steps):
+        """Returns the expected travel time in seconds."""
+        travel = abs(steps - self.pos) / self.STEPS_PER_S if self.pos is not None else 1.5
+        self.pos = steps
+        self.send(f"G {steps}")
+        return travel
+
 
 class Settler:
-    """After a move, waits until the laser reading stops changing."""
+    """Waits for the laser reading to stop moving after a move."""
 
-    MIN_WAIT_S = 0.3     # let the motor start/finish moving
-    WINDOW_S = 0.3       # readings over this long ...
-    TOL_IN = 0.1         # ... must agree within this much
+    MIN_WAIT_S = 0.3
+    WINDOW_S = 0.3
+    TOL_IN = 0.1
+    MISS_S = 0.8        # nothing seen this long after arriving -> off the wall
     TIMEOUT_S = 4.0
 
-    def __init__(self, now):
+    def __init__(self, now, travel_s=0.0):
         self.t0 = now
+        self.wait = self.MIN_WAIT_S + travel_s
         self.samples = deque()
+        self.seen = False
 
     def update(self, now, x):
-        """Return (done, x). x is None if the laser was never seen."""
-        if now - self.t0 < self.MIN_WAIT_S:
+        """Returns (done, x). x is None if we never saw the laser."""
+        elapsed = now - self.t0
+        if elapsed < self.wait:
             return False, None
         if x is not None:
             self.samples.append((now, x))
+            self.seen = True
         while self.samples and self.samples[0][0] < now - self.WINDOW_S:
             self.samples.popleft()
-        xs = [s[1] for s in self.samples]
+        xs = [x for _, x in self.samples]
         span = self.samples[-1][0] - self.samples[0][0] if self.samples else 0
         if len(xs) >= 3 and span >= self.WINDOW_S * 0.8 and max(xs) - min(xs) < self.TOL_IN:
             return True, float(np.median(xs))
-        if now - self.t0 > self.TIMEOUT_S:
-            return True, float(np.median(xs)) if xs else None
+        if not self.seen and elapsed > self.wait + self.MISS_S:
+            return True, None
+        if elapsed > self.wait + self.TIMEOUT_S:
+            return True, (float(np.median(xs)) if xs else None)
         return False, None
 
 
-# ------------------------------------------------------------ calibration ----
-
 class LaserCalibration:
-    """Steps <-> inches lookup table, measured by sweeping the motor."""
+    """Builds the steps <-> inches table in two passes:
+      1. explore: step out from 0 both ways until the line leaves the wall,
+         then bisect to pin down each edge
+      2. measure: sweep left to right across that range, recording points
+    Measuring in one direction keeps gear backlash out of the table."""
 
-    def __init__(self, send, step_min, step_max, n_points=10):
-        self.send = send
-        self.positions = [int(round(s)) for s in np.linspace(step_min, step_max, n_points)]
-        self.points = []        # (steps, inches)
-        self.queue = []
+    EXPLORE_STEP = 100
+    REFINE_ROUNDS = 3   # 100 -> 50 -> 25 -> 12 steps
+    POINT_SPACING = 40
+    MIN_POINTS, MAX_POINTS = 8, 25
+    PRELOAD = 40        # start the sweep a bit left of the first point
+
+    def __init__(self, stepper, max_steps=900):
+        self.stepper = stepper
+        self.max_steps = max_steps
+        self.points = []   # (steps, inches)
         self.settler = None
         self.status = "not calibrated (press k)"
         self.load()
 
     @property
-    def ready(self):
-        return len(self.points) >= 3 and not self.running
-
-    @property
     def running(self):
         return self.settler is not None
 
-    # --- the sweep, driven one frame at a time ---
+    @property
+    def ready(self):
+        return len(self.points) >= 3 and not self.running
+
     def start(self, now):
         self.points = []
-        self.queue = list(self.positions)
-        self.send("L 1")
-        self._next(now)
+        self.phase = "explore"
+        self.dir = 1
+        self.misses = 0
+        self.edge = {1: None, -1: None}
+        self.refine = None   # (last seen, first missed, rounds left)
+        self.stepper.send("L 1")
+        self._go(0, now)
 
-    def _next(self, now):
-        if not self.queue:
-            self.settler = None
-            self._finish()
-            return
-        self.current = self.queue.pop(0)
-        self.send(f"G {self.current}")
-        self.settler = Settler(now)
-        self.status = (f"calibrating: step {self.current} "
-                       f"({len(self.positions) - len(self.queue)}/{len(self.positions)})")
+    def _go(self, steps, now):
+        self.current = steps
+        self.settler = Settler(now, self.stepper.move(steps))
+        if self.phase == "explore":
+            self.status = f"calibrating: finding the wall edges (step {steps:+d})"
+        elif self.phase == "measure":
+            self.status = f"calibrating: measuring {len(self.points) + 1}/{len(self.todo) + len(self.points) + 1}"
 
     def update(self, now, laser_x):
         if not self.running:
             return
         done, x = self.settler.update(now, laser_x)
-        if done:
+        if not done:
+            return
+        self.settler = None
+        if self.phase == "explore":
+            self._explore(x, now)
+        elif self.phase == "preload":
+            self.phase = "measure"
+            self._go(self.todo.pop(0), now)
+        else:
             if x is None:
-                log(f"  step {self.current:5d} -> laser not seen (off the wall?)")
+                log(f"  step {self.current:5d} -> laser not seen")
             else:
                 log(f"  step {self.current:5d} -> {x:6.2f} in")
                 self.points.append((self.current, x))
-            self._next(now)
+            if self.todo:
+                self._go(self.todo.pop(0), now)
+            else:
+                self._finish()
+
+    def _explore(self, x, now):
+        if self.current == 0 and x is None:
+            self._fail("laser not on the wall at step 0, aim it at the middle of the wall")
+            return
+
+        if self.refine:
+            seen, missed, rounds = self.refine
+            if x is not None:
+                seen = self.edge[self.dir] = self.current
+            else:
+                missed = self.current
+            if rounds > 1:
+                self.refine = (seen, missed, rounds - 1)
+                self._go((seen + missed) // 2, now)
+            else:
+                self.refine = None
+                self._next_side(now)
+            return
+
+        if x is not None:
+            self.edge[self.dir] = self.current
+            self.misses = 0
+        else:
+            self.misses += 1
+        nxt = self.current + self.dir * self.EXPLORE_STEP
+        if abs(nxt) > self.max_steps:
+            self._next_side(now)
+        elif self.misses >= 2:
+            edge = self.edge[self.dir]
+            if edge is None:
+                self._next_side(now)
+            else:   # the edge is somewhere in the 100 steps past the last hit
+                missed = edge + self.dir * self.EXPLORE_STEP
+                self.refine = (edge, missed, self.REFINE_ROUNDS)
+                self._go((edge + missed) // 2, now)
+        else:
+            self._go(nxt, now)
+
+    def _next_side(self, now):
+        if self.dir == 1:
+            self.dir, self.misses = -1, 0
+            self._go(-self.EXPLORE_STEP, now)
+        else:
+            self._plan_sweep(now)
+
+    def _plan_sweep(self, now):
+        lo, hi = self.edge[-1] or 0, self.edge[1] or 0
+        if hi - lo < self.EXPLORE_STEP:
+            self._fail("laser only seen near the center, is the camera seeing the wall?")
+            return
+        n = int(np.clip((hi - lo) // self.POINT_SPACING + 1, self.MIN_POINTS, self.MAX_POINTS))
+        self.todo = [int(round(v)) for v in np.linspace(lo, hi, n)]
+        log(f"  wall spans steps {lo:+d} to {hi:+d}, measuring {n} points")
+        self.phase = "preload"
+        self._go(lo - self.PRELOAD, now)
+
+    def _fail(self, why):
+        self.settler = None
+        self.points = []
+        self.status = f"calibration FAILED: {why}"
+        log(self.status)
 
     def _finish(self):
         if len(self.points) < 3:
-            self.status = f"calibration FAILED: laser seen at only {len(self.points)} positions"
-            log(self.status)
-            self.points = []
+            self._fail(f"laser seen at only {len(self.points)} positions")
             return
-        steps = np.array([p[0] for p in self.points], dtype=float)
-        inches = np.array([p[1] for p in self.points], dtype=float)
+        inches = np.array([x for _, x in self.points])
         d = np.diff(inches)
         if not (np.all(d > 0) or np.all(d < 0)):
-            log("warning: laser positions are not in order; some readings may be wrong")
+            log("warning: laser positions are out of order, some readings may be off")
         self.save()
-        self.status = (f"calibrated: {len(self.points)} pts, "
-                       f"{inches.min():.1f}-{inches.max():.1f} in")
+        self.status = f"calibrated: {len(self.points)} pts, {inches.min():.1f}-{inches.max():.1f} in"
         log(self.status)
 
-    # --- lookups ---
-    def _sorted_by_inches(self):
+    def _table(self):
         pts = sorted(self.points, key=lambda p: p[1])
-        return np.array([p[1] for p in pts]), np.array([p[0] for p in pts], dtype=float)
+        return np.array([x for _, x in pts]), np.array([s for s, _ in pts], dtype=float)
 
     def in_range(self, x):
-        inches, _ = self._sorted_by_inches()
+        inches, _ = self._table()
         return inches[0] <= x <= inches[-1]
 
     def steps_for(self, x):
-        """Steps that should put the laser at x inches (linear between points)."""
-        inches, steps = self._sorted_by_inches()
+        inches, steps = self._table()
         return float(np.interp(x, inches, steps))
 
     def steps_per_inch(self, x):
-        """Local slope, used to turn an aiming error in inches into steps."""
         return (self.steps_for(x + 0.25) - self.steps_for(x - 0.25)) / 0.5
 
-    # --- persistence ---
     def save(self):
         LASER_CALIB_PATH.write_text(json.dumps({"points": self.points}, indent=2))
 
     def load(self):
-        if LASER_CALIB_PATH.exists():
+        try:
             self.points = [tuple(p) for p in json.loads(LASER_CALIB_PATH.read_text())["points"]]
-            if len(self.points) >= 3:
-                self.status = f"calibrated: {len(self.points)} pts (loaded; k to redo)"
+        except (OSError, ValueError, KeyError):
+            return
+        if len(self.points) >= 3:
+            self.status = f"calibrated: {len(self.points)} pts (loaded, k to redo)"
 
-
-# ----------------------------------------------------------------- aiming ----
 
 class Aimer:
-    """Points the laser at a target x, then corrects using what the camera sees."""
+    """Moves to the stud using the table, then nudges based on where the
+    camera actually sees the line. Every move ends going left to right
+    (like the calibration sweep) so gear backlash doesn't add error."""
 
-    TOL_IN = 0.15        # good enough
+    TOL_IN = 0.15
     MAX_CORRECTIONS = 3
+    PRELOAD = 40
 
-    def __init__(self, send, lcal):
-        self.send = send
+    def __init__(self, stepper, lcal):
+        self.stepper = stepper
         self.lcal = lcal
         self.settler = None
+        self.preloading = False
         self.target = None
         self.label = ""
         self.status = ""
@@ -226,15 +310,17 @@ class Aimer:
             self.status = "laser not calibrated (press k)"
             return
         if not self.lcal.in_range(target):
-            log(f"warning: {target:.1f} in is outside the calibrated range; extrapolating")
+            log(f"warning: {target:.1f} in is outside the calibrated range, extrapolating")
         self.target, self.label, self.tries = target, label, 0
         self.steps = int(round(self.lcal.steps_for(target)))
-        self.send("L 1")
+        self.stepper.send("L 1")
         self._move(now)
 
     def _move(self, now):
-        self.send(f"G {self.steps}")
-        self.settler = Settler(now)
+        pos = self.stepper.pos
+        self.preloading = pos is not None and self.steps < pos
+        dest = self.steps - self.PRELOAD if self.preloading else self.steps
+        self.settler = Settler(now, self.stepper.move(dest))
         self.status = f"aiming at {self.label} {self.target:.1f} in ..."
 
     def update(self, now, laser_x):
@@ -244,45 +330,44 @@ class Aimer:
         if not done:
             return
         self.settler = None
+        if self.preloading:              # now come back from the left
+            self.preloading = False
+            self.settler = Settler(now, self.stepper.move(self.steps))
+            return
         if x is None:
             self.status = f"{self.label}: laser not seen after move"
             return
+
         err = self.target - x
         if abs(err) <= self.TOL_IN or self.tries >= self.MAX_CORRECTIONS:
-            ok = "on target" if abs(err) <= self.TOL_IN else "best effort"
-            self.status = f"{self.label} @ {self.target:.1f} in: {ok}, error {err:+.2f} in"
+            result = "on target" if abs(err) <= self.TOL_IN else "best effort"
+            self.status = f"{self.label} @ {self.target:.1f} in: {result}, error {err:+.2f} in"
             log(self.status)
             return
+
         self.tries += 1
-        nudge = int(round(err * self.lcal.steps_per_inch(x)))
-        if nudge == 0:
-            nudge = 1 if err * self.lcal.steps_per_inch(x) > 0 else -1
-        log(f"  correction {self.tries}: laser at {x:.2f}, error {err:+.2f} in, "
-              f"nudge {nudge:+d} steps")
+        nudge = err * self.lcal.steps_per_inch(x)
+        nudge = int(round(nudge)) or (1 if nudge > 0 else -1)
+        log(f"  correction {self.tries}: laser at {x:.2f}, error {err:+.2f} in, nudge {nudge:+d} steps")
         self.steps += nudge
         self._move(now)
 
 
-# --------------------------------------------------------------- simulator ---
-
 class FakeRig:
-    """Pretend stepper + line laser, for testing without hardware.
+    """Simulated stepper + laser. Draws a red line onto the frame so the
+    detector, calibration and aiming can run without hardware. ERR_DEG adds
+    some position-dependent error so the corrections have work to do."""
 
-    Laser sits DIST_IN from the wall, aimed at AIM_IN when at step 0. A small
-    built-in error (ERR_DEG) makes the simulated lookup table imperfect so the
-    correction step has something to fix.
-    """
-
-    DEG_PER_STEP = 360 / 4096   # 28BYJ-48 in half-step mode
+    DEG_PER_STEP = 360 / 4096   # 28BYJ-48, half-stepping
     DIST_IN = 30.0
     ERR_DEG = 0.4
+    STEPS_PER_S = Stepper.STEPS_PER_S
 
     def __init__(self, aim_in):
-        self.aim_in = aim_in
+        self.aim_in = aim_in    # where step 0 points
         self.target = 0
         self.pos = 0.0
         self.on = False
-        self.calls = 0
 
     def command(self, cmd):
         parts = cmd.split()
@@ -294,14 +379,11 @@ class FakeRig:
             self.on = parts[1] == "1"
 
     def x_in(self):
-        # Simulated backlash/slop: a small error that varies with position.
-        angle = math.radians(self.pos * self.DEG_PER_STEP
-                             + self.ERR_DEG * math.sin(self.pos / 90))
+        angle = math.radians(self.pos * self.DEG_PER_STEP + self.ERR_DEG * math.sin(self.pos / 90))
         return self.aim_in + self.DIST_IN * math.tan(angle)
 
     def draw(self, frame, calib, dt):
-        """Move toward the target at ~500 steps/s and draw the line on the wall."""
-        step = 500 * dt
+        step = self.STEPS_PER_S * dt
         self.pos += max(-step, min(step, self.target - self.pos))
         if not (self.on and calib.ready):
             return

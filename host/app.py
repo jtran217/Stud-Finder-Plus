@@ -15,7 +15,7 @@ import numpy as np
 
 import laser
 import vision
-from serial_link import FakeLink, SerialLink
+from serial_link import FakeLink, SerialLink, find_laser_port, find_port
 
 # ---- Edit these to match tonight's setup -----------------------------------
 # Default scan-area size in inches (width, height): the distance between the
@@ -28,10 +28,10 @@ SENSOR_OFFSET_IN = 0.0
 CAMERA_LATENCY_S = 0.0
 # Studs whose centers are closer than this are treated as the same stud.
 MERGE_IN = 1.0
-# Laser calibration sweeps the motor between these step positions (step 0 =
-# where the motor was at power-up or the last Z). Widen if the laser doesn't
-# reach both edges of the wall; narrow if it goes way past them.
-LASER_STEP_RANGE = (-300, 300)
+# Laser calibration finds the wall edges by itself, starting from step 0
+# (where the motor sits when the board connects, aim it at the middle of the
+# wall). This just caps how far it may turn each way (900 steps ~ 80 deg).
+LASER_MAX_STEPS = 900
 # ----------------------------------------------------------------------------
 
 CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"]
@@ -123,14 +123,29 @@ class StudApp:
     """All program state. Thread-safe: every public method takes the lock."""
 
     def __init__(self, serial=False, port=None, tape=False, fake_laser=False,
-                 wall_size=None, ask_wall_size=False):
+                 wall_size=None, ask_wall_size=False, laser_serial=False, laser_port=None):
         """wall_size: (width, height) in inches, overrides the saved size.
-        ask_wall_size: make entering the size the first setup step (web page)."""
+        ask_wall_size: make entering the size the first setup step (web page).
+        laser_serial / laser_port: motor + laser on a separate board (laser
+        station); without it, laser commands go to the stud finder's board."""
         self.lock = threading.RLock()
         self.messages = deque(maxlen=60)   # (time, text) for the UI log
         laser.log = self.log
 
-        self.link = SerialLink(port) if serial else FakeLink()
+        self.laser_link = None
+        if laser_serial or laser_port:
+            lport = laser_port or find_laser_port()
+            if lport is None:
+                raise RuntimeError("Laser station not found. Is it plugged in and flashed "
+                                   "with firmware/laser_station?")
+            self.laser_link = SerialLink(lport, wait_ready=True)
+            self.log(f"laser station: {lport}")
+
+        if serial:
+            exclude = [self.laser_link.port] if self.laser_link else []
+            self.link = SerialLink(port or find_port(exclude=exclude))
+        else:
+            self.link = FakeLink()
         self.log(f"stud signal: {self.link.port}")
         self.rig = None
         if fake_laser:
@@ -149,8 +164,9 @@ class StudApp:
 
         self.view = "video"
         self.detector = laser.LaserDetector()
-        self.lcal = laser.LaserCalibration(self.send, *LASER_STEP_RANGE)
-        self.aimer = laser.Aimer(self.send, self.lcal)
+        self.stepper = laser.Stepper(self.send)
+        self.lcal = laser.LaserCalibration(self.stepper, LASER_MAX_STEPS)
+        self.aimer = laser.Aimer(self.stepper, self.lcal)
         self.laser_on = False
         self.aim_index = None
 
@@ -169,7 +185,7 @@ class StudApp:
         self.messages.append((time.time(), text))
 
     def send(self, cmd):
-        self.link.send(cmd)
+        (self.laser_link or self.link).send(cmd)
         if self.rig is not None:
             self.rig.command(cmd)
 
@@ -265,7 +281,7 @@ class StudApp:
                 if not self.calib.ready:
                     self.log("finish the wall setup first")
                     return
-                if self.rig is None and isinstance(self.link, FakeLink):
+                if self.rig is None and self.laser_link is None and isinstance(self.link, FakeLink):
                     self.log("note: no laser connected (--serial) or simulated "
                              "(--fake-laser); calibration needs a red line on the wall")
                 self.log("laser calibration: sweeping the motor ...")
@@ -333,8 +349,22 @@ class StudApp:
 
             # --- laser ---
             self.laser_x = self.detector.find(frame, self.calib)
-            self.lcal.update(now, self.laser_x)
+            # Calibrate only inside the box from setup; the detector also sees a
+            # little past it, which aiming uses to correct overshoots.
+            x_box = self.laser_x
+            if x_box is not None:
+                xs = self.calib.wall_in[:, 0]
+                if not (xs.min() <= x_box <= xs.max()):
+                    x_box = None
+            self.lcal.update(now, x_box)
             self.aimer.update(now, self.laser_x)
+
+            # --- laser station replies (OK lines are routine, skip them) ---
+            if self.laser_link is not None:
+                while not self.laser_link.events.empty():
+                    _, line = self.laser_link.events.get()
+                    if not line.startswith("OK"):
+                        self.log(f"laser station: {line}")
 
             # --- stud signal events ---
             while not self.link.events.empty():
@@ -428,6 +458,7 @@ class StudApp:
                 "open_x": self.studmap.open_x,
                 "laser": {
                     "simulated": self.rig is not None,
+                    "port": self.laser_link.port if self.laser_link else None,
                     "x": self.laser_x,
                     "on": self.laser_on,
                     "calibrated": self.lcal.ready,
@@ -443,4 +474,11 @@ class StudApp:
             }
 
     def close(self):
+        if self.laser_link is not None:
+            # The Uno resets on the next connect and calls wherever it is "step 0",
+            # so park at 0 or the saved laser calibration drifts between runs.
+            self.laser_link.send("L 0")
+            self.laser_link.send("G 0")
+            time.sleep(1.0)
+            self.laser_link.close()
         self.link.close()

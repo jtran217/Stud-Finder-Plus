@@ -57,7 +57,11 @@ def wall_size(text):
 def add_common_args(ap):
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--serial", action="store_true", help="use the real Pro Micro")
-    ap.add_argument("--port", default=None, help="serial port (default: auto)")
+    ap.add_argument("--port", default=None, help="stud finder serial port (default: auto)")
+    ap.add_argument("--laser-serial", action="store_true",
+                    help="motor + laser are on a separate board (laser station)")
+    ap.add_argument("--laser-port", default=None,
+                    help="laser station serial port (default: auto-detect)")
     ap.add_argument("--tape", action="store_true",
                     help="track a colored object on the stud finder instead of marker 10")
     ap.add_argument("--fake-laser", action="store_true",
@@ -82,7 +86,8 @@ def main():
 
     cap = open_camera(args.camera)
     app = StudApp(serial=args.serial, port=args.port, tape=args.tape,
-                  fake_laser=args.fake_laser, wall_size=args.wall)
+                  fake_laser=args.fake_laser, wall_size=args.wall,
+                  laser_serial=args.laser_serial, laser_port=args.laser_port)
 
     def on_mouse(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:

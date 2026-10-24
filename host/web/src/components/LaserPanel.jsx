@@ -2,6 +2,8 @@ import { fmt } from "../geometry.js";
 
 export default function LaserPanel({ state, command }) {
   const L = state.laser;
+  // Calibrating only needs the wall box, not the stud finder's color.
+  const boxReady = state.wall_size_set && state.clicks >= 4;
   const status = L.x == null && !L.calibrating ? `Laser line not in view. ${L.status}` : L.status;
 
   return (
@@ -14,7 +16,7 @@ export default function LaserPanel({ state, command }) {
       <p className="sub">{status}</p>
       <p className="aim">{L.aim_status}</p>
       <div className="row">
-        <button disabled={!!state.setup_step || L.calibrating} onClick={() => command("laser_calibrate")}>
+        <button disabled={!boxReady || L.calibrating} onClick={() => command("laser_calibrate")}>
           Calibrate <kbd>K</kbd>
         </button>
         <button
