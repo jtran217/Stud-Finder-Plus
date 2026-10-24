@@ -95,3 +95,95 @@ def finder_x(markers, calib, sensor_offset_in=0.0):
     if c is None or not calib.ready:
         return None
     return float(calib.px_to_in(c)[:, 0].mean()) + sensor_offset_in
+
+
+class TapeTracker:
+    """Tracks a patch of colored tape on the stud finder (alternative to marker 10).
+
+    Click the tape once; its color is sampled from the live frame, so any tape
+    color works under whatever lighting you have. Each frame, the blob of that
+    color (inside the wall area, if calibrated) that best matches the tape's
+    size and last position is the stud finder.
+    """
+
+    HUE_TOL = 10        # OpenCV hue runs 0-179
+    MIN_AREA_PX = 300   # ignore specks smaller than this
+
+    def __init__(self):
+        self.lo = self.hi = None   # HSV bounds; hue may wrap past 179
+        self.mask = None           # last threshold mask, for debugging
+        self.last = None           # last tape center in pixels
+        self.ref_area = None       # tape's blob area, learned on the first find
+
+    @property
+    def ready(self):
+        return self.lo is not None
+
+    def sample(self, frame, x, y, r=8):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        patch = hsv[max(y - r, 0):y + r, max(x - r, 0):x + r].reshape(-1, 3)
+        h, s, v = np.median(patch, axis=0)
+        if s < 60:
+            print(f"warning: clicked color is washed out (saturation {s:.0f}); "
+                  "tracking may be unreliable. Use a more colorful tape.")
+        self.lo = (h - self.HUE_TOL, max(s * 0.5, 50), max(v * 0.4, 40))
+        self.hi = (h + self.HUE_TOL, 255, 255)
+        self.last, self.ref_area = (x, y), None
+        print(f"tape color sampled: HSV ({h:.0f}, {s:.0f}, {v:.0f})")
+
+    def _threshold(self, hsv):
+        (h0, s0, v0), (h1, _, _) = self.lo, self.hi
+        m = cv2.inRange(hsv, (max(h0, 0), s0, v0), (min(h1, 179), 255, 255))
+        if h0 < 0:     # hue wraps around (reds)
+            m |= cv2.inRange(hsv, (180 + h0, s0, v0), (179, 255, 255))
+        if h1 > 179:
+            m |= cv2.inRange(hsv, (0, s0, v0), (h1 - 180, 255, 255))
+        return m
+
+    def find(self, frame, calib=None, margin_in=2.0):
+        """Return the tape's 4 corner points in pixels (like a marker), or None."""
+        if not self.ready:
+            return None
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = self._threshold(hsv)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        if calib is not None and calib.ready:
+            # Only look on the wall (plus a margin), so a blue shirt doesn't count.
+            (x0, y0), (x1, y1) = calib.wall_in.min(0), calib.wall_in.max(0)
+            m = margin_in
+            area = calib.in_to_px([(x0 - m, y0 - m), (x1 + m, y0 - m),
+                                   (x1 + m, y1 + m), (x0 - m, y1 + m)])
+            wall = np.zeros_like(mask)
+            cv2.fillPoly(wall, [area.astype(np.int32)], 255)
+            mask &= wall
+        self.mask = mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        blobs = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < self.MIN_AREA_PX:
+                continue
+            (cx, cy), _, _ = rect = cv2.minAreaRect(c)
+            blobs.append((area, (cx, cy), rect, c))
+        if not blobs:
+            return None
+        if self.ref_area is None:
+            # First find after a click: the blob under the click is the tape.
+            under = [b for b in blobs if cv2.pointPolygonTest(b[3], self.last, False) >= 0]
+            if not under:
+                return None
+            best = under[0]
+            self.ref_area = best[0]
+        else:
+            # Keep blobs roughly the tape's size (within ~2.7x), then prefer the
+            # one closest in size and position to where the tape was last seen.
+            size_err = lambda b: abs(np.log(b[0] / self.ref_area))
+            blobs = [b for b in blobs if size_err(b) < 1.0]
+            if not blobs:
+                return None
+            best = min(blobs, key=lambda b: size_err(b) + np.hypot(
+                b[1][0] - self.last[0], b[1][1] - self.last[1]) / 300.0)
+        self.last = best[1]
+        return cv2.boxPoints(best[2]).astype(np.float32)

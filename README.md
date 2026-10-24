@@ -19,6 +19,10 @@ python host/main.py --camera N --serial  # with the Pro Micro
 Edit `WALL_CORNERS_IN` at the top of `host/main.py` to your measured tape crosses.
 Keys: `c` re-calibrate, `r` reset studs, `space` fake signal, `q` quit.
 
+No marker? Put a ~2" square of bright painter's tape (blue is good; avoid red,
+the laser is red) on the stud finder and add `--tape`. After the corner clicks,
+click the tape once to sample its color. `t` re-samples, `m` shows the color mask.
+
 ## Layout
 - `host/` laptop code (Python + OpenCV)
 - `markers/` ArUco markers (DICT_4X4_50; ID 10 = stud finder, 0-3 = wall corners)

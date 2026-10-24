@@ -2,12 +2,14 @@
 
   python host/main.py --camera 1              # keyboard fake stud signal (space)
   python host/main.py --camera 1 --serial     # real Pro Micro on /dev/cu.usbmodem*
+  python host/main.py --camera 1 --tape       # track colored tape instead of marker 10
 
 Keys:  c = re-click calibration   r = reset studs   space = fake stud signal
-       q = quit
+       t = re-click tape color (--tape)   m = show tape mask (--tape)   q = quit
 
 First run: click the 4 tape crosses in order TL, TR, BR, BL.
 Clicks are saved to host/calib.json and reused until the tripod moves (press c).
+With --tape, you then click the tape on the stud finder once to sample its color.
 """
 import argparse
 import bisect
@@ -15,13 +17,14 @@ import time
 from collections import deque
 
 import cv2
+import numpy as np
 
 import vision
 from serial_link import FakeLink, SerialLink
 
 # ---- Edit these to match tonight's setup -----------------------------------
 # Measured positions of the 4 tape crosses, in inches. Order: TL, TR, BR, BL.
-WALL_CORNERS_IN = [(0, 0), (48, 0), (48, 24), (0, 24)]
+WALL_CORNERS_IN = [(0, 0), (24, 0), (24, 12), (0, 12)]
 # Inches from marker 10's center to the stud finder's sensing point (+ = right).
 SENSOR_OFFSET_IN = 0.0
 # Camera frames arrive a little late; shift frame timestamps back by this much.
@@ -122,6 +125,8 @@ def main():
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--serial", action="store_true", help="use the real Pro Micro")
     ap.add_argument("--port", default=None, help="serial port (default: auto)")
+    ap.add_argument("--tape", action="store_true",
+                    help="track colored tape on the stud finder instead of marker 10")
     args = ap.parse_args()
 
     cap = cv2.VideoCapture(args.camera, cv2.CAP_AVFOUNDATION)
@@ -141,15 +146,24 @@ def main():
     if calib.load(frame_size):
         print("loaded saved calibration (press c to redo)")
     clicking = not calib.ready
+    tape = vision.TapeTracker() if args.tape else None
+    tape_click = []        # pending click on the tape, sampled on the next frame
+    show_mask = False
 
     def on_mouse(event, x, y, flags, param):
-        if clicking and event == cv2.EVENT_LBUTTONDOWN and len(clicks) < 4:
-            clicks.append((x / DISPLAY_SCALE, y / DISPLAY_SCALE))
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        px = (x / DISPLAY_SCALE, y / DISPLAY_SCALE)
+        if clicking and len(clicks) < 4:
+            clicks.append(px)
+        elif tape is not None and not tape.ready:
+            tape_click[:] = [px]
 
     win = "Stud Mapper"
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, on_mouse)
 
+    finder_name = "tape" if tape is not None else "marker 10"
     history = History()
     studmap = StudMap()
     fps, last = 0.0, time.time()
@@ -169,8 +183,20 @@ def main():
             clicking = False
             print("calibration saved")
 
+        if tape_click:
+            tape.sample(frame, int(tape_click[0][0]), int(tape_click[0][1]))
+            tape_click.clear()
+
         markers = vision.detect(frame)
-        x = vision.finder_x(markers, calib, SENSOR_OFFSET_IN)
+        tape_box = None
+        if tape is not None:
+            # The tape replaces marker 10 as the stud finder's position.
+            markers.pop(vision.FINDER_ID, None)
+            tape_box = tape.find(frame, calib)
+            x = vision.finder_x({vision.FINDER_ID: tape_box} if tape_box is not None else {},
+                                calib, SENSOR_OFFSET_IN)
+        else:
+            x = vision.finder_x(markers, calib, SENSOR_OFFSET_IN)
         if x is not None:
             history.add(now - CAMERA_LATENCY_S, x)
 
@@ -181,14 +207,20 @@ def main():
             if kind in ("S1", "S0"):
                 ex = history.x_at(t)
                 if ex is None:
-                    print(f"{kind} ignored: marker 10 not seen at that moment")
+                    print(f"{kind} ignored: {finder_name} not seen at that moment")
                 else:
                     studmap.handle(kind, ex)
             else:
                 print(f"arduino: {line}")
 
         # --- drawing ---
+        if show_mask and tape is not None and tape.mask is not None:
+            frame = cv2.cvtColor(tape.mask, cv2.COLOR_GRAY2BGR)
         vision.draw_markers(frame, markers)
+        if tape_box is not None:
+            cv2.polylines(frame, [tape_box.astype(np.int32)], True, (0, 255, 255), 3)
+            cv2.putText(frame, "tape", tuple(tape_box[1].astype(int)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
         for p in clicks if clicking else (calib.px if calib.ready else []):
             cv2.drawMarker(frame, (int(p[0]), int(p[1])), (255, 0, 255),
                            cv2.MARKER_CROSS, 40, 3)
@@ -199,8 +231,10 @@ def main():
         if clicking:
             hud.append(f"CLICK the {CORNER_NAMES[len(clicks)]} cross "
                        f"{WALL_CORNERS_IN[len(clicks)]} in")
+        elif tape is not None and not tape.ready:
+            hud.append("CLICK the tape on the stud finder")
         else:
-            hud.append(f"x = {x:.2f} in" if x is not None else "x = --  (marker 10 not seen)")
+            hud.append(f"x = {x:.2f} in" if x is not None else f"x = --  ({finder_name} not seen)")
             if studmap.open_x is not None:
                 hud.append(f"stud started @ {studmap.open_x:.1f} in ...")
         draw_hud(frame, hud)
@@ -214,6 +248,10 @@ def main():
             clicking = True
         elif key == ord("r"):
             studmap = StudMap()
+        elif key == ord("t") and tape is not None:
+            tape.lo = tape.hi = None
+        elif key == ord("m") and tape is not None:
+            show_mask = not show_mask
         elif key == ord(" ") and isinstance(link, FakeLink):
             link.toggle()
 
