@@ -57,11 +57,12 @@ def wall_size(text):
 def add_common_args(ap):
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--serial", action="store_true", help="use the real Pro Micro")
-    ap.add_argument("--port", default=None, help="stud finder serial port (default: auto)")
+    ap.add_argument("--port", default=None,
+                    help="stud finder serial port (default: host/ports.json, else the first usbmodem)")
     ap.add_argument("--laser-serial", action="store_true",
                     help="motor + laser are on a separate board (laser station)")
     ap.add_argument("--laser-port", default=None,
-                    help="laser station serial port (default: auto-detect)")
+                    help="laser station serial port (default: host/ports.json, else auto-detect)")
     ap.add_argument("--tape", action="store_true",
                     help="track a colored object on the stud finder instead of marker 10")
     ap.add_argument("--fake-laser", action="store_true",

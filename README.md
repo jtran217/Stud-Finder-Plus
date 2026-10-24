@@ -3,6 +3,28 @@
 A $15 stud finder + Arduino + iPhone camera that maps every stud on a wall,
 and (stretch) points a laser at it.
 
+## Quick start
+1. **Install** (once): see [Setup](#setup-laptop) below.
+2. **Set up the wall:** 4 painter's tape crosses around the scan area, a
+   bright non-red object taped to the stud finder, iPhone on the tripod
+   facing the wall (Center Stage off).
+3. **Run** (Pro Micro on USB, from the repo root):
+   ```
+   ./start.sh --flash   # first time, or after changing the firmware
+   ./start.sh           # every other time
+   ```
+   It finds the Pro Micro's port, checks nothing else has it open, saves it
+   in `host/ports.json`, optionally uploads the firmware, then starts the web
+   page at http://localhost:8000 (it walks you through the wall setup). Each
+   stud edge shows up in the terminal and the page's log. Extra options go to
+   `web.py`, e.g. `./start.sh --camera 1`. Don't run `pio device monitor`
+   alongside it; if the board drops off USB, the app reconnects by itself.
+   Without the hardware: `python host/web.py --tape`, space = stud signal.
+4. **Scan each stud from both sides:** hold the button with the finder flat
+   on the wall left of the stud, slide right until the LED lights, release.
+   Then press again right of the stud and slide left until it lights. The two
+   edges make one stud on the map.
+
 ## Setup (laptop)
 ```
 python3 -m venv .venv && source .venv/bin/activate
@@ -16,7 +38,7 @@ open http://localhost:5173 (it proxies to the Python server).
 ```
 python host/find_camera.py               # which index is the iPhone?
 python host/web.py --tape                # web page at http://localhost:8000
-python host/web.py --tape --serial       # with the Pro Micro
+python host/web.py --tape --serial       # with the Pro Micro (port: host/ports.json or --port)
 python host/web.py --tape --fake-laser   # simulated laser + motor
 python host/main.py --tape               # same thing in an OpenCV window (backup)
 ```
@@ -43,7 +65,8 @@ laser is red). Without it, the program tracks ArUco marker 10
 - `firmware/` Pro Micro code (PlatformIO)
 
 Serial protocol (115200): Arduino sends `S1`/`S0 <millis>`, `OK`/`ERR`;
-laptop sends `G <steps>`, `Z`, `L 1|0`, `P`.
+laptop sends `G <steps>`, `Z`, `L 1|0`, `P`. Each `S1` is a stud edge; the
+host pairs two edges 0.5–3.5" apart into one stud and ignores `S0`.
 
 ## Laser (stretch goal)
 Point the laser roughly at the middle of the wall before connecting (that's
@@ -63,7 +86,8 @@ cd firmware/laser_station && pio run -e uno -t upload
 Wiring: pins 4-7 -> ULN2003 IN1-IN4; pin 9 -> 1k -> 2N2222 base (laser);
 driver board + laser powered from the 5V power module; **all grounds joined**.
 Run the laptop with `--laser-serial` (finds the station by its `ID LASER`
-reply) or `--laser-port /dev/cu.xxx`:
+reply and remembers it in `host/ports.json`, so the stud finder never grabs
+that port) or `--laser-port /dev/cu.xxx`. With `start.sh`, add `--laser-serial`:
 ```
 python host/web.py --tape --serial --laser-serial
 ```

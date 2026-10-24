@@ -15,7 +15,7 @@ import numpy as np
 
 import laser
 import vision
-from serial_link import FakeLink, SerialLink, find_laser_port, find_port
+from serial_link import FakeLink, SerialLink, find_laser_port
 
 # ---- Edit these to match tonight's setup -----------------------------------
 # Default scan-area size in inches (width, height): the distance between the
@@ -28,6 +28,10 @@ SENSOR_OFFSET_IN = 0.0
 CAMERA_LATENCY_S = 0.0
 # Studs whose centers are closer than this are treated as the same stud.
 MERGE_IN = 1.0
+# A stud is two edges, one found sliding in from each side. Edges closer or
+# farther apart than this aren't paired into one stud.
+MIN_STUD_IN = 0.5
+MAX_STUD_IN = 3.5
 # Laser calibration finds the wall edges by itself, starting from step 0
 # (where the motor sits when the board connects, aim it at the middle of the
 # wall). This just caps how far it may turn each way (900 steps ~ 80 deg).
@@ -78,16 +82,28 @@ class History:
 class StudMap:
     def __init__(self, log=print):
         self.studs = []       # dicts: center, left, right, n
-        self.open_x = None    # x at the last S1, waiting for S0
+        self.open_x = None    # x of the first edge, waiting for the other side's
         self.log = log
 
     def handle(self, kind, x):
-        if kind == "S1":
+        # Each S1 is a stud edge (the LED came on while sliding in from one
+        # side). S0 only means the finder was lifted or switched off: ignore it.
+        if kind != "S1":
+            return
+        if self.open_x is None:
             self.open_x = x
-        elif kind == "S0" and self.open_x is not None:
+            self.log(f"edge @ {x:.2f} in, waiting for the other side")
+            return
+        width = abs(x - self.open_x)
+        if MIN_STUD_IN <= width <= MAX_STUD_IN:
             left, right = sorted((self.open_x, x))
             self.open_x = None
             self._add(left, right)
+        else:
+            # Same side twice, or a different stud: start over from this edge.
+            self.log(f"edge @ {x:.2f} in doesn't pair with {self.open_x:.2f} in "
+                     f"({width:.2f} in apart), starting over")
+            self.open_x = x
 
     def _add(self, left, right):
         center = (left + right) / 2
@@ -143,7 +159,7 @@ class StudApp:
 
         if serial:
             exclude = [self.laser_link.port] if self.laser_link else []
-            self.link = SerialLink(port or find_port(exclude=exclude))
+            self.link = SerialLink(port, exclude=exclude)
         else:
             self.link = FakeLink()
         self.log(f"stud signal: {self.link.port}")
@@ -415,7 +431,7 @@ class StudApp:
             lines.append(f"x = {self.x:.2f} in" if self.x is not None
                          else f"x = --  ({self.finder_name} not seen)")
             if self.studmap.open_x is not None:
-                lines.append(f"stud started @ {self.studmap.open_x:.1f} in ...")
+                lines.append(f"edge @ {self.studmap.open_x:.1f} in, now come from the other side")
             seen = f"{self.laser_x:.2f} in" if self.laser_x is not None else "--"
             lines.append(f"laser: {seen}   {self.lcal.status}")
             if self.aimer.status:
