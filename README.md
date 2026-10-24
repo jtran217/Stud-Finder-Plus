@@ -7,7 +7,10 @@ and (stretch) points a laser at it.
 ```
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cd host/web && npm install && npm run build   # the web page (React + Vite)
 ```
+For page development, run `npm run dev` in `host/web` alongside `web.py` and
+open http://localhost:5173 (it proxies to the Python server).
 
 ## Run
 ```
@@ -33,8 +36,9 @@ laser is red). Without it, the program tracks ArUco marker 10
 
 ## Layout
 - `host/` laptop code (Python + OpenCV)
-  - `app.py` the core (tracking, stud map, laser); `web.py` + `web/` the browser
-    page; `main.py` the OpenCV window; `vision.py`, `laser.py`, `serial_link.py`
+  - `app.py` the core (tracking, stud map, laser); `web.py` the web server;
+    `web/` the React page; `main.py` the OpenCV window; `vision.py`,
+    `laser.py`, `serial_link.py`
 - `markers/` ArUco markers (DICT_4X4_50; ID 10 = stud finder, 0-3 = wall corners)
 - `firmware/` Pro Micro code (PlatformIO)
 

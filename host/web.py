@@ -7,7 +7,9 @@
 
 http://localhost:8000/?still shows one frame instead of live video (screenshots).
 
-Same options as main.py. Uses only the Python standard library.
+Same options as main.py. The page is a React app in host/web; build it once
+with `npm install && npm run build` (in host/web). For live-reload while
+editing the page, run `npm run dev` there and open http://localhost:5173.
 """
 import argparse
 import json
@@ -23,12 +25,18 @@ import cv2
 from app import StudApp
 from main import add_common_args, open_camera
 
-WEB_DIR = Path(__file__).parent / "web"
-STATIC = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/style.css": ("style.css", "text/css; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+DIST = (Path(__file__).parent / "web" / "dist").resolve()
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
 }
+NOT_BUILT = b"""<!doctype html><meta charset="utf-8"><title>Stud Mapper</title>
+<p style="font:16px sans-serif;margin:2rem">The web page isn't built yet. Run
+<code>cd host/web && npm install && npm run build</code>, then reload.</p>"""
 STREAM_WIDTH = 1280      # video is scaled to this width for the browser
 JPEG_QUALITY = 80
 
@@ -88,10 +96,7 @@ def make_handler(app, hub):
 
         def do_GET(self):
             path = self.path.split("?")[0]
-            if path in STATIC:
-                name, ctype = STATIC[path]
-                self._send((WEB_DIR / name).read_bytes(), ctype)
-            elif path == "/api/state":
+            if path == "/api/state":
                 self._json(app.state())
             elif path == "/stream.mjpg":
                 self._stream()
@@ -99,7 +104,18 @@ def make_handler(app, hub):
                 _, jpeg = hub.wait_frame(-1)
                 self._send(jpeg or b"", "image/jpeg")
             else:
-                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                self._static(path)
+
+        def _static(self, path):
+            if not (DIST / "index.html").exists():
+                return self._send(NOT_BUILT, "text/html; charset=utf-8")
+            file = (DIST / path.lstrip("/")).resolve()
+            if path == "/" or not file.is_file():
+                file = DIST / "index.html"
+            if not file.is_relative_to(DIST):     # no ../ escapes
+                return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            ctype = CONTENT_TYPES.get(file.suffix, "application/octet-stream")
+            self._send(file.read_bytes(), ctype)
 
         def do_POST(self):
             try:
