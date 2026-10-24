@@ -47,6 +47,12 @@ class Calibration:
     def ready(self):
         return self.H is not None
 
+    def set_wall(self, wall_in):
+        """Change the reference points' inch positions (keeps the clicks)."""
+        self.wall_in = np.array(wall_in, dtype=np.float32)
+        if self.px is not None:
+            self.set_pixels(self.px)
+
     def set_pixels(self, px_points):
         self.px = np.array(px_points, dtype=np.float32)
         self.H, _ = cv2.findHomography(self.px, self.wall_in)
@@ -73,13 +79,13 @@ class Calibration:
         }, indent=2))
 
     def load(self, frame_size):
-        """Load saved clicks if they match the current wall points and resolution."""
+        """Load the saved wall size and clicks (if taken at this resolution)."""
         if not CALIB_PATH.exists():
             return False
         d = json.loads(CALIB_PATH.read_text())
-        if d["frame_size"] != list(frame_size) or \
-                not np.allclose(d["wall_in"], self.wall_in):
+        if d["frame_size"] != list(frame_size):
             return False
+        self.wall_in = np.array(d["wall_in"], dtype=np.float32)
         self.set_pixels(d["px"])
         return True
 
