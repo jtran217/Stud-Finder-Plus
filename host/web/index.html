@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stud Mapper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="brand">Stud Mapper</h1>
+    <ul class="status" aria-label="Connections">
+      <li id="st-camera">Camera</li>
+      <li id="st-signal">Stud signal</li>
+      <li id="st-laser">Laser</li>
+    </ul>
+  </header>
+
+  <div id="offline" class="offline" hidden>
+    Lost contact with the Stud Mapper program. Check that <code>web.py</code> is still running, then this page reconnects by itself.
+  </div>
+
+  <main class="layout">
+    <section class="stage" aria-label="Camera and wall">
+      <div class="video-frame" id="video-frame">
+        <img id="video" alt="Live camera view of the wall">
+        <div class="setup-banner" id="setup-banner" hidden>
+          <svg class="corner-map" id="corner-map" viewBox="0 0 64 40" aria-hidden="true"></svg>
+          <p id="setup-text"></p>
+        </div>
+        <div class="views" role="group" aria-label="Camera view" id="views"></div>
+      </div>
+
+      <!-- Wall x-ray: hidden for now; remove "hidden" to bring it back. -->
+      <figure class="xray" id="xray-figure" hidden>
+        <figcaption>
+          <h2>Wall x-ray</h2>
+          <p id="xray-hint">Click a stud to point the laser at it.</p>
+        </figcaption>
+        <div id="xray" class="xray-canvas"></div>
+      </figure>
+    </section>
+
+    <aside class="panel">
+      <section class="block" aria-labelledby="h-setup">
+        <h2 id="h-setup">Setup</h2>
+        <ol class="steps">
+          <li id="step-wall">
+            <div class="step-head"><span class="step-title">Enter the scan area size</span><span class="step-state" id="wall-state"></span></div>
+            <form class="wall-form" id="wall-form" hidden>
+              <p class="hint">Measure between the centers of the tape crosses.</p>
+              <div class="fields">
+                <label for="wall-w">Width</label>
+                <input type="number" id="wall-w" min="1" max="600" step="any" inputmode="decimal" required><span>in</span>
+                <label for="wall-h">Height</label>
+                <input type="number" id="wall-h" min="1" max="600" step="any" inputmode="decimal" required><span>in</span>
+              </div>
+              <div class="row">
+                <button type="submit" class="primary">Save size</button>
+                <button type="button" id="btn-wall-cancel" hidden>Cancel</button>
+              </div>
+            </form>
+            <div class="row" id="wall-change" hidden>
+              <button type="button" id="btn-wall-change">Change size</button>
+            </div>
+          </li>
+          <li id="step-corners">
+            <div class="step-head"><span class="step-title">Mark the wall corners</span><span class="step-state" id="corners-state"></span></div>
+            <div class="row">
+              <button data-cmd="recalibrate" data-key="c">Redo corners <kbd>C</kbd></button>
+              <button data-cmd="undo_click" id="btn-undo">Undo click</button>
+            </div>
+          </li>
+          <li id="step-object">
+            <div class="step-head"><span class="step-title" id="object-title">Pick the stud finder's color</span><span class="step-state" id="object-state"></span></div>
+            <div class="row">
+              <button data-cmd="resample_object" data-key="t" id="btn-resample">Pick again <kbd>T</kbd></button>
+            </div>
+          </li>
+          <li id="step-sweep">
+            <div class="step-head"><span class="step-title">Sweep the wall</span><span class="step-state" id="sweep-state"></span></div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="block" aria-labelledby="h-scan">
+        <h2 id="h-scan">Stud finder</h2>
+        <p class="readout"><span id="finder-x">--</span><span class="unit">in</span></p>
+        <p class="sub" id="finder-sub">from the left edge</p>
+        <div class="row">
+          <button data-cmd="stud_signal" data-key=" " id="btn-signal" class="primary">Stud signal <kbd>Space</kbd></button>
+          <button data-cmd="reset_studs" data-key="r">Clear studs <kbd>R</kbd></button>
+        </div>
+        <ul class="stud-list" id="stud-list"></ul>
+      </section>
+
+      <section class="block" aria-labelledby="h-laser">
+        <h2 id="h-laser">Laser</h2>
+        <p class="readout small"><span id="laser-x">--</span><span class="unit">in</span></p>
+        <p class="sub" id="laser-status"></p>
+        <p class="aim" id="aim-status"></p>
+        <div class="row">
+          <button data-cmd="laser_calibrate" data-key="k">Calibrate <kbd>K</kbd></button>
+          <button data-cmd="next_stud" data-key="n" class="primary">Next stud <kbd>N</kbd></button>
+          <button data-cmd="laser_toggle" data-key="l" id="btn-laser">Laser on <kbd>L</kbd></button>
+        </div>
+      </section>
+
+      <section class="block log-block" aria-labelledby="h-log">
+        <h2 id="h-log">Activity</h2>
+        <ol class="log" id="log" reversed></ol>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -20,6 +20,9 @@ import numpy as np
 
 LASER_CALIB_PATH = Path(__file__).parent / "laser_calib.json"
 
+# Where messages go; app.py points this at its own log so the web page sees them.
+log = print
+
 
 # ---------------------------------------------------------------- detection --
 
@@ -67,7 +70,7 @@ class LaserDetector:
         a, b = max(peak - p // 2, 0), min(peak + p // 2 + 1, w)
         weights = cols[a:b]
         cx = float((np.arange(a, b) * weights).sum() / weights.sum())
-        return x0 + (cx + 0.5) / p
+        return float(x0 + (cx + 0.5) / p)
 
 
 # --------------------------------------------------------------- settling ----
@@ -147,27 +150,27 @@ class LaserCalibration:
         done, x = self.settler.update(now, laser_x)
         if done:
             if x is None:
-                print(f"  step {self.current:5d} -> laser not seen (off the wall?)")
+                log(f"  step {self.current:5d} -> laser not seen (off the wall?)")
             else:
-                print(f"  step {self.current:5d} -> {x:6.2f} in")
+                log(f"  step {self.current:5d} -> {x:6.2f} in")
                 self.points.append((self.current, x))
             self._next(now)
 
     def _finish(self):
         if len(self.points) < 3:
             self.status = f"calibration FAILED: laser seen at only {len(self.points)} positions"
-            print(self.status)
+            log(self.status)
             self.points = []
             return
         steps = np.array([p[0] for p in self.points], dtype=float)
         inches = np.array([p[1] for p in self.points], dtype=float)
         d = np.diff(inches)
         if not (np.all(d > 0) or np.all(d < 0)):
-            print("warning: laser positions are not in order; some readings may be wrong")
+            log("warning: laser positions are not in order; some readings may be wrong")
         self.save()
         self.status = (f"calibrated: {len(self.points)} pts, "
                        f"{inches.min():.1f}-{inches.max():.1f} in")
-        print(self.status)
+        log(self.status)
 
     # --- lookups ---
     def _sorted_by_inches(self):
@@ -223,7 +226,7 @@ class Aimer:
             self.status = "laser not calibrated (press k)"
             return
         if not self.lcal.in_range(target):
-            print(f"warning: {target:.1f} in is outside the calibrated range; extrapolating")
+            log(f"warning: {target:.1f} in is outside the calibrated range; extrapolating")
         self.target, self.label, self.tries = target, label, 0
         self.steps = int(round(self.lcal.steps_for(target)))
         self.send("L 1")
@@ -248,13 +251,13 @@ class Aimer:
         if abs(err) <= self.TOL_IN or self.tries >= self.MAX_CORRECTIONS:
             ok = "on target" if abs(err) <= self.TOL_IN else "best effort"
             self.status = f"{self.label} @ {self.target:.1f} in: {ok}, error {err:+.2f} in"
-            print(self.status)
+            log(self.status)
             return
         self.tries += 1
         nudge = int(round(err * self.lcal.steps_per_inch(x)))
         if nudge == 0:
             nudge = 1 if err * self.lcal.steps_per_inch(x) > 0 else -1
-        print(f"  correction {self.tries}: laser at {x:.2f}, error {err:+.2f} in, "
+        log(f"  correction {self.tries}: laser at {x:.2f}, error {err:+.2f} in, "
               f"nudge {nudge:+d} steps")
         self.steps += nudge
         self._move(now)
