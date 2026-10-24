@@ -6,6 +6,7 @@ __pycache__/
 # Host runtime / media
 host/calib.json
 host/laser_calib.json
+host/ports.json
 *.mov
 *.mp4
 
