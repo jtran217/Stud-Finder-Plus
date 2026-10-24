@@ -6,3 +6,4 @@ host/calib.json
 *.mov
 *.mp4
 .pio/
+host/laser_calib.json

@@ -30,3 +30,12 @@ click the tape once to sample its color. `t` re-samples, `m` shows the color mas
 
 Serial protocol (115200): Arduino sends `S1`/`S0 <millis>`, `OK`/`ERR`;
 laptop sends `G <steps>`, `Z`, `L 1|0`, `P`.
+
+## Laser (stretch goal)
+Keys: `k` calibrate the laser (sweeps the motor and learns steps -> inches),
+`n` aim at the next stud, `l` laser on/off, `m` cycles mask views.
+Set `LASER_STEP_RANGE` in `host/main.py` so the sweep covers the wall.
+Test without hardware: `python host/main.py --tape --fake-laser`
+(draws a simulated laser line). The detector looks for bright red, so a dim
+room or lower exposure helps; check it with the laser mask view (`m`).
+

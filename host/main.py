@@ -3,9 +3,12 @@
   python host/main.py --camera 1              # keyboard fake stud signal (space)
   python host/main.py --camera 1 --serial     # real Pro Micro on /dev/cu.usbmodem*
   python host/main.py --camera 1 --tape       # track colored tape instead of marker 10
+  python host/main.py --fake-laser            # simulated laser + motor, for testing
 
 Keys:  c = re-click calibration   r = reset studs   space = fake stud signal
-       t = re-click tape color (--tape)   m = show tape mask (--tape)   q = quit
+       t = re-click tape color (--tape)   m = cycle mask views (tape / laser)
+       k = calibrate laser   n = aim laser at next stud   l = laser on/off
+       q = quit
 
 First run: click the 4 tape crosses in order TL, TR, BR, BL.
 Clicks are saved to host/calib.json and reused until the tripod moves (press c).
@@ -19,6 +22,7 @@ from collections import deque
 import cv2
 import numpy as np
 
+import laser
 import vision
 from serial_link import FakeLink, SerialLink
 
@@ -33,6 +37,10 @@ CAMERA_LATENCY_S = 0.0
 MERGE_IN = 1.0
 # Display is scaled down so a 1080p frame fits on a laptop screen.
 DISPLAY_SCALE = 0.6
+# Laser calibration sweeps the motor between these step positions (step 0 =
+# where the motor was at power-up or the last Z). Widen if the laser doesn't
+# reach both edges of the wall; narrow if it goes way past them.
+LASER_STEP_RANGE = (-300, 300)
 # ----------------------------------------------------------------------------
 
 CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"]
@@ -127,6 +135,8 @@ def main():
     ap.add_argument("--port", default=None, help="serial port (default: auto)")
     ap.add_argument("--tape", action="store_true",
                     help="track colored tape on the stud finder instead of marker 10")
+    ap.add_argument("--fake-laser", action="store_true",
+                    help="simulate the laser + motor (draws a red line on the video)")
     args = ap.parse_args()
 
     cap = cv2.VideoCapture(args.camera, cv2.CAP_AVFOUNDATION)
@@ -141,6 +151,16 @@ def main():
     link = SerialLink(args.port) if args.serial else FakeLink()
     print(f"stud signal: {link.port}")
 
+    rig = None
+    if args.fake_laser:
+        x0, x1 = min(p[0] for p in WALL_CORNERS_IN), max(p[0] for p in WALL_CORNERS_IN)
+        rig = laser.FakeRig(aim_in=(x0 + x1) / 2)
+
+    def send(cmd):
+        link.send(cmd)
+        if rig is not None:
+            rig.command(cmd)
+
     calib = vision.Calibration(WALL_CORNERS_IN)
     clicks = []
     if calib.load(frame_size):
@@ -148,7 +168,12 @@ def main():
     clicking = not calib.ready
     tape = vision.TapeTracker() if args.tape else None
     tape_click = []        # pending click on the tape, sampled on the next frame
-    show_mask = False
+    view = "video"         # or "tape mask" / "laser mask"
+    detector = laser.LaserDetector()
+    lcal = laser.LaserCalibration(send, *LASER_STEP_RANGE)
+    aimer = laser.Aimer(send, lcal)
+    laser_on = False
+    aim_index = -1
 
     def on_mouse(event, x, y, flags, param):
         if event != cv2.EVENT_LBUTTONDOWN:
@@ -173,8 +198,11 @@ def main():
         now = time.time()
         if not ok:
             continue
-        fps = 0.9 * fps + 0.1 / max(now - last, 1e-6)
+        dt = now - last
+        fps = 0.9 * fps + 0.1 / max(dt, 1e-6)
         last = now
+        if rig is not None:
+            rig.draw(frame, calib, dt)
 
         # --- calibration by clicking ---
         if clicking and len(clicks) == 4:
@@ -200,6 +228,11 @@ def main():
         if x is not None:
             history.add(now - CAMERA_LATENCY_S, x)
 
+        # --- laser ---
+        laser_x = detector.find(frame, calib)
+        lcal.update(now, laser_x)
+        aimer.update(now, laser_x)
+
         # --- stud signal events ---
         while not link.events.empty():
             t, line = link.events.get()
@@ -214,8 +247,12 @@ def main():
                 print(f"arduino: {line}")
 
         # --- drawing ---
-        if show_mask and tape is not None and tape.mask is not None:
+        if view == "tape mask" and tape is not None and tape.mask is not None:
             frame = cv2.cvtColor(tape.mask, cv2.COLOR_GRAY2BGR)
+        elif view == "laser mask" and detector.mask is not None:
+            frame = cv2.resize(cv2.cvtColor(detector.mask, cv2.COLOR_GRAY2BGR),
+                               (frame.shape[1], frame.shape[0]),
+                               interpolation=cv2.INTER_NEAREST)
         vision.draw_markers(frame, markers)
         if tape_box is not None:
             cv2.polylines(frame, [tape_box.astype(np.int32)], True, (0, 255, 255), 3)
@@ -224,8 +261,14 @@ def main():
         for p in clicks if clicking else (calib.px if calib.ready else []):
             cv2.drawMarker(frame, (int(p[0]), int(p[1])), (255, 0, 255),
                            cv2.MARKER_CROSS, 40, 3)
-        if calib.ready and not clicking:
+        if calib.ready and not clicking and view == "video":
             draw_studs(frame, calib, studmap.studs)
+            if laser_x is not None:
+                y0, y1 = calib.y_range
+                top, bot = calib.in_to_px([(laser_x, y0), (laser_x, y1)]).astype(int)
+                cv2.line(frame, tuple(top), tuple(bot), (255, 255, 0), 1)
+                cv2.putText(frame, f"laser {laser_x:.1f}", (bot[0] + 8, bot[1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 0), 2)
 
         hud = [f"{fps:4.1f} fps   markers: {sorted(markers)}"]
         if clicking:
@@ -237,6 +280,12 @@ def main():
             hud.append(f"x = {x:.2f} in" if x is not None else f"x = --  ({finder_name} not seen)")
             if studmap.open_x is not None:
                 hud.append(f"stud started @ {studmap.open_x:.1f} in ...")
+            seen = f"{laser_x:.2f} in" if laser_x is not None else "--"
+            hud.append(f"laser: {seen}   {lcal.status}")
+            if aimer.status:
+                hud.append(aimer.status)
+        if view != "video":
+            hud.append(f"[{view}]  m = next view")
         draw_hud(frame, hud)
 
         cv2.imshow(win, cv2.resize(frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE))
@@ -250,8 +299,28 @@ def main():
             studmap = StudMap()
         elif key == ord("t") and tape is not None:
             tape.lo = tape.hi = None
-        elif key == ord("m") and tape is not None:
-            show_mask = not show_mask
+        elif key == ord("m"):
+            views = ["video"] + (["tape mask"] if tape is not None else []) + ["laser mask"]
+            view = views[(views.index(view) + 1) % len(views)]
+        elif key == ord("k") and calib.ready and not clicking:
+            if rig is None and isinstance(link, FakeLink):
+                print("note: no laser hardware (--serial) and no simulator (--fake-laser); "
+                      "calibration will only work if a real red line is on the wall")
+            print("laser calibration: sweeping the motor ...")
+            aimer.status = ""
+            lcal.start(now)
+            laser_on = True
+        elif key == ord("n") and not lcal.running:
+            if not studmap.studs:
+                aimer.status = "no studs found yet"
+            else:
+                aim_index = (aim_index + 1) % len(studmap.studs)
+                s = studmap.studs[aim_index]
+                aimer.aim(s["center"], now, label=f"Stud {aim_index + 1}")
+                laser_on = laser_on or aimer.running
+        elif key == ord("l"):
+            laser_on = not laser_on
+            send(f"L {int(laser_on)}")
         elif key == ord(" ") and isinstance(link, FakeLink):
             link.toggle()
 
