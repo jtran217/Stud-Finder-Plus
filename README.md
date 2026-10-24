@@ -18,8 +18,9 @@ python host/web.py --tape --fake-laser   # simulated laser + motor
 python host/main.py --tape               # same thing in an OpenCV window (backup)
 ```
 Both take the same options (`--camera N`, `--serial`, `--tape`, `--fake-laser`).
-The web page walks you through setup: click the 4 tape crosses on the video,
-then the colored object. Keyboard shortcuts work on the page and in the window:
+The web page walks you through setup: enter the distance between the tape
+crosses, drag a box over them on the video and drag each corner onto its cross
+(a magnifier helps; arrow keys nudge), then click the colored object. Keyboard shortcuts work on the page and in the window:
 `c` redo corners, `t` re-pick color, `space` fake stud signal, `r` clear studs,
 `m` switch views, `k` calibrate laser, `n` next stud, `l` laser on/off.
 

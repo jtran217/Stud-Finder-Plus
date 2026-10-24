@@ -228,6 +228,23 @@ class StudApp:
                 if self.calib.ready and not self.clicking and self.frame_size:
                     self.calib.save(self.frame_size)   # clicks kept, inches updated
                 self.log(f"scan area set to {w:g} x {h:g} in")
+            elif name == "set_corners":
+                # 4 corners from the web page's box, as fractions of the frame,
+                # order TL, TR, BR, BL.
+                if not self.frame_size or not self.wall_size_set:
+                    return
+                try:
+                    pts = [(float(x) * self.frame_size[0], float(y) * self.frame_size[1])
+                           for x, y in arg["corners"]]
+                    assert len(pts) == 4
+                except (TypeError, KeyError, ValueError, AssertionError):
+                    self.log("corners: expected 4 points")
+                    return
+                self.clicks = pts
+                self.calib.set_pixels(pts)
+                self.calib.save(self.frame_size)
+                self.clicking = False
+                self.log("wall corners saved")
             elif name == "recalibrate":
                 self.clicks = []
                 self.clicking = True
@@ -390,6 +407,10 @@ class StudApp:
                 "clicks": len(self.clicks) if self.clicking else 4,
                 "wall": {"x0": min(xs), "x1": max(xs), "y0": min(ys), "y1": max(ys)},
                 "corners_in": corners,
+                # saved corner positions as fractions of the frame (for the box editor)
+                "corners_norm": ([[float(x) / self.frame_size[0], float(y) / self.frame_size[1]]
+                                  for x, y in self.calib.px]
+                                 if self.calib.px is not None and self.frame_size else None),
                 "wall_size": self.wall_size,
                 "wall_size_set": self.wall_size_set,
                 "tracker": {

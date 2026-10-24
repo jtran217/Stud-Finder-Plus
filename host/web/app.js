@@ -61,7 +61,8 @@ document.addEventListener("keydown", (e) => {
   if (!b.disabled) command(b.dataset.cmd);
 });
 
-// Clicks on the video, as fractions of the actual picture (ignores letterboxing).
+// Clicks on the video (used to pick the object's color), as fractions of the
+// actual picture (ignores letterboxing).
 $("video").addEventListener("click", (e) => {
   if (!state || !state.setup_step) return;
   const img = e.currentTarget;
@@ -150,9 +151,11 @@ function renderSetup(s) {
 
   const corners = $("step-corners"), object = $("step-object"), sweep = $("step-sweep");
   corners.className = !wallSet ? "" : clicking ? "current" : "done";
-  $("corners-state").textContent = !wallSet ? "" : clicking ? `${s.clicks} of 4` : "done";
-  $("btn-undo").hidden = !clicking;
-  $("btn-undo").disabled = s.clicks === 0;
+  $("corners-state").textContent = !wallSet ? "" : !clicking ? "done"
+    : editor.box ? "drag the corners" : "draw a box";
+  $("btn-corners-save").disabled = !editor.box;
+  $("btn-corners-cancel").hidden = !s.corners_norm;
+  updateEditor(s, clicking);
 
   object.className = !needObject ? "skip" : (!wallSet || clicking ? "" : (objectDone ? "done" : "current"));
   $("object-state").textContent = objectDone && needObject ? "locked on" : "";
@@ -172,13 +175,13 @@ function renderSetup(s) {
       $("setup-text").textContent = "Enter the distance between the tape crosses in the Setup panel";
       renderCornerMap(-2);
     } else if (clicking) {
-      const c = s.corners_in[s.clicks];
-      $("setup-text").textContent =
-        `Click the ${CORNER_LABELS[s.clicks]} tape cross (${c[0]}, ${c[1]} in)`;
+      $("setup-text").textContent = editor.box
+        ? "Drag each corner onto the center of its tape cross, then save corners"
+        : "Drag across the video to draw a box over the 4 tape crosses";
     } else {
       $("setup-text").textContent = "Click the colored object on the stud finder";
     }
-    if (wallSet) renderCornerMap(clicking ? s.clicks : -1);
+    if (wallSet) renderCornerMap(clicking ? 4 : -1);
   }
 }
 
@@ -437,3 +440,221 @@ $("xray").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.stopPropagation(); aimFromEvent(e); }
 });
 window.addEventListener("resize", () => state && renderXray(state));
+
+
+// -------------------------------------------------------------- box editor --
+// Setup step 2: drag on the video to draw a box, then drag each corner onto its
+// tape cross. Corners are kept as fractions of the picture (0-1), so the
+// display size doesn't matter. A magnifier shows the spot under a dragged corner.
+const editor = {
+  active: false,
+  box: null,         // [[x, y] x4] as fractions, in any order while editing
+  drag: null,        // {type: "corner"|"move"|"draw", ...}
+  selected: null,    // corner index for arrow-key nudges
+};
+const HANDLE_HIT_PX = 18;
+
+function pictureRect() {
+  // Where the picture sits inside the video frame (letterboxing aware).
+  const img = $("video"), frame = $("video-frame");
+  const fr = frame.getBoundingClientRect(), ir = img.getBoundingClientRect();
+  const nw = img.naturalWidth || 16, nh = img.naturalHeight || 9;
+  const scale = Math.min(ir.width / nw, ir.height / nh);
+  const w = nw * scale, h = nh * scale;
+  return { left: ir.left - fr.left + (ir.width - w) / 2, top: ir.top - fr.top + (ir.height - h) / 2,
+           w, h, fw: fr.width, fh: fr.height, fr };
+}
+const toPx = (p, r) => [r.left + p[0] * r.w, r.top + p[1] * r.h];
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+function eventPoint(e, r) {
+  return [clamp01((e.clientX - r.fr.left - r.left) / r.w), clamp01((e.clientY - r.fr.top - r.top) / r.h)];
+}
+
+// TL, TR, BR, BL from 4 points in any order.
+function orderCorners(pts) {
+  const byY = pts.slice().sort((a, b) => a[1] - b[1]);
+  const [tl, tr] = byY.slice(0, 2).sort((a, b) => a[0] - b[0]);
+  const [bl, br] = byY.slice(2).sort((a, b) => a[0] - b[0]);
+  return [tl, tr, br, bl];
+}
+
+function insidePolygon(p, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function updateEditor(s, editing) {
+  if (editing && !editor.active) {           // just entered editing: start from saved corners
+    editor.active = true;
+    editor.box = s.corners_norm ? s.corners_norm.map((p) => p.slice()) : null;
+    editor.selected = null;
+  } else if (!editing && editor.active) {
+    editor.active = false;
+    editor.drag = null;
+    $("loupe").hidden = true;
+  }
+  // SVG elements have no .hidden property, so set the attribute directly.
+  $("box-editor").toggleAttribute("hidden", !editor.active);
+  $("video-frame").classList.toggle("editing", editor.active);
+  if (editor.active) drawEditor();
+}
+
+function drawEditor() {
+  const svg = $("box-editor");
+  const r = pictureRect();
+  svg.setAttribute("viewBox", `0 0 ${r.fw} ${r.fh}`);
+  if (!editor.box) { svg.innerHTML = ""; return; }
+  const pts = editor.box.map((p) => toPx(p, r));
+  const ordered = orderCorners(editor.box);
+  // Outline in on-screen order (TL, TR, BR, BL) so edges never cross.
+  const poly = ordered.map((p) => toPx(p, r).join(",")).join(" ");
+  let g = `<polygon class="body" points="${poly}" fill="rgba(242,197,36,0.14)" stroke="#26282b" stroke-width="4" stroke-linejoin="round"/>`;
+  g += `<polygon points="${poly}" fill="none" stroke="#f2c524" stroke-width="2" stroke-linejoin="round" pointer-events="none"/>`;
+
+  // size labels on the top and left edges, from the entered size
+  if (state && !editor.drag) {
+    const [tl, tr, , bl] = ordered.map((p) => toPx(p, r));
+    const pill = (x, y, text) => {
+      const w = text.length * 7.4 + 14;
+      return `<g pointer-events="none"><rect x="${x - w / 2}" y="${y - 11}" width="${w}" height="22" rx="4" fill="#26282b"/>` +
+             `<text x="${x}" y="${y + 4.5}" text-anchor="middle" font-size="13" font-weight="700" fill="#f2c524">${text}</text></g>`;
+    };
+    g += pill((tl[0] + tr[0]) / 2, (tl[1] + tr[1]) / 2, `${state.wall_size[0]} in`);
+    g += pill((tl[0] + bl[0]) / 2, (tl[1] + bl[1]) / 2, `${state.wall_size[1]} in`);
+  }
+
+  // corner handles: ring + crosshair, labeled with their inch position
+  editor.box.forEach((p, i) => {
+    const [x, y] = pts[i];
+    const k = ordered.indexOf(p);
+    const sel = editor.selected === i;
+    const c = state ? state.corners_in[k] : [0, 0];
+    const lx = x + (k === 1 || k === 2 ? 16 : -16), ly = y + (k >= 2 ? 26 : -18);
+    g += `<g class="handle">` +
+      `<circle cx="${x}" cy="${y}" r="${sel ? 13 : 11}" fill="rgba(38,40,43,0.15)" stroke="#26282b" stroke-width="4"/>` +
+      `<circle cx="${x}" cy="${y}" r="${sel ? 13 : 11}" fill="none" stroke="#f2c524" stroke-width="2"/>` +
+      `<path d="M${x - 6} ${y}H${x + 6}M${x} ${y - 6}V${y + 6}" stroke="#f2c524" stroke-width="1.5"/>` +
+      `<text x="${lx}" y="${ly}" text-anchor="${k === 1 || k === 2 ? "start" : "end"}" font-size="12" font-weight="700" fill="#f2c524" stroke="#26282b" stroke-width="3" paint-order="stroke">${c[0]}, ${c[1]}</text>` +
+      `</g>`;
+  });
+  svg.innerHTML = g;
+}
+
+function showLoupe(p) {
+  const r = pictureRect(), img = $("video"), loupe = $("loupe");
+  const nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw) return;
+  const ctx = loupe.getContext("2d");
+  const R = 36;                                  // picture pixels around the point (≈4x zoom)
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#26282b";
+  ctx.fillRect(0, 0, 150, 150);
+  try {
+    ctx.drawImage(img, p[0] * nw - R, p[1] * nh - R, R * 2, R * 2, 0, 0, 150, 150);
+  } catch (e) { return; }
+  ctx.strokeStyle = "#f2c524"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(75, 60); ctx.lineTo(75, 90); ctx.moveTo(60, 75); ctx.lineTo(90, 75); ctx.stroke();
+  const [x, y] = toPx(p, r);
+  // keep it next to the pointer but inside the frame
+  let lx = x + 24, ly = y - 174;
+  if (lx + 150 > r.fw) lx = x - 174;
+  if (ly < 0) ly = y + 24;
+  loupe.style.left = `${lx}px`;
+  loupe.style.top = `${ly}px`;
+  loupe.hidden = false;
+}
+
+$("box-editor").addEventListener("pointerdown", (e) => {
+  if (!editor.active) return;
+  e.preventDefault();
+  const r = pictureRect();
+  const p = eventPoint(e, r);
+  const [px, py] = [e.clientX - r.fr.left, e.clientY - r.fr.top];
+  let hit = -1;
+  if (editor.box) {
+    editor.box.forEach((c, i) => {
+      const [cx, cy] = toPx(c, r);
+      if (Math.hypot(cx - px, cy - py) <= HANDLE_HIT_PX) hit = i;
+    });
+  }
+  if (hit >= 0) {
+    editor.drag = { type: "corner", i: hit };
+    editor.selected = hit;
+    showLoupe(editor.box[hit]);
+  } else if (editor.box && insidePolygon(p, editor.box)) {
+    editor.drag = { type: "move", start: p, orig: editor.box.map((c) => c.slice()) };
+  } else {
+    editor.drag = { type: "draw", start: p, prev: editor.box };
+    editor.box = null;
+    editor.selected = null;
+  }
+  e.currentTarget.setPointerCapture(e.pointerId);
+  drawEditor();
+});
+
+$("box-editor").addEventListener("pointermove", (e) => {
+  const d = editor.drag;
+  if (!d) return;
+  const p = eventPoint(e, pictureRect());
+  if (d.type === "corner") {
+    editor.box[d.i] = p;
+    showLoupe(p);
+  } else if (d.type === "move") {
+    const dx = p[0] - d.start[0], dy = p[1] - d.start[1];
+    editor.box = d.orig.map(([x, y]) => [clamp01(x + dx), clamp01(y + dy)]);
+  } else {
+    const [x0, y0] = d.start;
+    editor.box = [[x0, y0], [p[0], y0], [p[0], p[1]], [x0, p[1]]];
+    showLoupe(p);
+  }
+  drawEditor();
+});
+
+function endDrag() {
+  const d = editor.drag;
+  if (!d) return;
+  editor.drag = null;
+  $("loupe").hidden = true;
+  if (d.type === "corner" && editor.box) {
+    const moved = editor.box[d.i];
+    editor.box = orderCorners(editor.box);
+    editor.selected = editor.box.indexOf(moved);
+  }
+  if (d.type === "draw") {
+    const b = editor.box;          // [start, ., pointer, .] while drawing
+    const tiny = !b || Math.abs(b[2][0] - b[0][0]) < 0.02 || Math.abs(b[2][1] - b[0][1]) < 0.02;
+    editor.box = tiny ? d.prev : orderCorners(b);   // just a click: keep the old box
+  }
+  if (state) render();
+}
+$("box-editor").addEventListener("pointerup", endDrag);
+$("box-editor").addEventListener("pointercancel", endDrag);
+
+function saveCorners() {
+  if (!editor.box) return;
+  command("set_corners", { corners: orderCorners(editor.box) });
+}
+$("btn-corners-save").addEventListener("click", saveCorners);
+$("btn-corners-cancel").addEventListener("click", () => {
+  if (state && state.corners_norm) command("set_corners", { corners: state.corners_norm });
+});
+
+// Enter saves; arrow keys nudge the last-dragged corner by one camera pixel.
+document.addEventListener("keydown", (e) => {
+  if (!editor.active || e.target.closest("input, textarea, select")) return;
+  if (e.key === "Enter") { e.preventDefault(); saveCorners(); return; }
+  const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!step || editor.selected === null || !editor.box) return;
+  e.preventDefault();
+  const img = $("video");
+  const nw = img.naturalWidth || 1920, nh = img.naturalHeight || 1080;
+  const mult = e.shiftKey ? 10 : 1;
+  const c = editor.box[editor.selected];
+  editor.box[editor.selected] = [clamp01(c[0] + (step[0] * mult) / nw), clamp01(c[1] + (step[1] * mult) / nh)];
+  drawEditor();
+});
+window.addEventListener("resize", () => editor.active && drawEditor());

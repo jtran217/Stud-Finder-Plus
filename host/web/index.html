@@ -25,12 +25,14 @@
 
   <main class="layout">
     <section class="stage" aria-label="Camera and wall">
-      <div class="video-frame" id="video-frame">
-        <img id="video" alt="Live camera view of the wall">
-        <div class="setup-banner" id="setup-banner" hidden>
+      <div class="setup-banner" id="setup-banner" hidden>
           <svg class="corner-map" id="corner-map" viewBox="0 0 64 40" aria-hidden="true"></svg>
           <p id="setup-text"></p>
         </div>
+      <div class="video-frame" id="video-frame">
+        <img id="video" alt="Live camera view of the wall">
+        <svg class="box-editor" id="box-editor" hidden aria-label="Box over the tape crosses. Drag to draw it, then drag each corner onto its cross."></svg>
+        <canvas class="loupe" id="loupe" width="150" height="150" hidden></canvas>
         <div class="views" role="group" aria-label="Camera view" id="views"></div>
       </div>
 
@@ -68,10 +70,13 @@
             </div>
           </li>
           <li id="step-corners">
-            <div class="step-head"><span class="step-title">Mark the wall corners</span><span class="step-state" id="corners-state"></span></div>
-            <div class="row">
-              <button data-cmd="recalibrate" data-key="c">Redo corners <kbd>C</kbd></button>
-              <button data-cmd="undo_click" id="btn-undo">Undo click</button>
+            <div class="step-head"><span class="step-title">Fit the box to the tape crosses</span><span class="step-state" id="corners-state"></span></div>
+            <div class="row" id="corners-edit-row">
+              <button type="button" class="primary" id="btn-corners-save" disabled>Save corners <kbd>Enter</kbd></button>
+              <button type="button" id="btn-corners-cancel">Cancel</button>
+            </div>
+            <div class="row" id="corners-done-row">
+              <button data-cmd="recalibrate" data-key="c">Adjust corners <kbd>C</kbd></button>
             </div>
           </li>
           <li id="step-object">

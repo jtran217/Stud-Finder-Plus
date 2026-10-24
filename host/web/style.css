@@ -123,15 +123,29 @@ kbd {
 .video-frame.clicking #video { cursor: crosshair; }
 
 .setup-banner {
-  position: absolute; left: 1rem; top: 1rem;
+  margin-bottom: 0.75rem;
   display: flex; align-items: center; gap: 0.9rem;
   background: var(--tape); color: var(--graphite);
   padding: 0.6rem 1rem 0.6rem 0.7rem;
   border-radius: 6px;
   line-height: 1.3;
   font-weight: 600;
-  max-width: calc(100% - 2rem);
   box-shadow: 0 2px 0 var(--graphite);
+}
+
+/* box editor over the video: drag to draw, drag corners onto the crosses */
+.box-editor {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  touch-action: none; cursor: crosshair; line-height: normal;
+}
+.box-editor .body { cursor: move; }
+.box-editor .handle { cursor: grab; }
+.box-editor text { font-family: var(--font); }
+.video-frame.editing .views { display: none; }
+.loupe {
+  position: absolute; width: 150px; height: 150px; border-radius: 50%;
+  border: 3px solid var(--graphite); box-shadow: 0 0 0 3px var(--tape);
+  pointer-events: none; background: var(--graphite);
 }
 .setup-banner p { margin: 0; }
 .corner-map { width: 3.2rem; flex: none; }
@@ -185,6 +199,9 @@ kbd {
 .steps > li.done .row { display: flex; }
 #step-sweep .row { display: none; }
 #step-wall .row { display: flex; }
+#step-corners.current #corners-edit-row { display: flex; }
+#step-corners.current #corners-done-row,
+#step-corners:not(.current) #corners-edit-row { display: none; }
 
 .hint { margin: 0.3rem 0 0.6rem; font-size: var(--fs-0); color: var(--pencil); }
 .fields {
