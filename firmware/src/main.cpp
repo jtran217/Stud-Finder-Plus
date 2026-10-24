@@ -2,7 +2,7 @@
 
 void setup() {
   Serial.begin(115200);
-  pinMode(A0, INPUT_PULLUP);   // hold A0 high when the stud LED is off
+  pinMode(A0, INPUT_PULLUP);   
 }
 
 void loop() {
