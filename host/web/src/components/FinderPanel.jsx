@@ -8,7 +8,7 @@ export default function FinderPanel({ state, command }) {
   let note = "from the left edge";
   if (state.setup_step) note = "finish setup first";
   else if (x == null) note = `${tracker.name} not in view`;
-  else if (state.open_x != null) note = `stud started at ${fmt(state.open_x)} in, keep going`;
+  else if (state.open_x != null) note = `edge at ${fmt(state.open_x)} in, now come from the other side`;
 
   const canAim = laser.calibrated && !laser.calibrating;
 
