@@ -1,4 +1,5 @@
-"""Talks to the Pro Micro over USB serial.
+"""USB serial links to the boards: the stud finder (Pro Micro) and,
+optionally, a separate laser station (see firmware/laser_station).
 
 Every incoming line is stamped with LAPTOP time (time.time()) the moment it
 arrives and put on .events as (t, line). Don't use the Arduino's millis for
@@ -24,7 +25,7 @@ from pathlib import Path
 
 BAUD = 115200
 RECONNECT_S = 0.5
-# This machine's ports, e.g. {"stud": "/dev/cu.usbmodem1101"}. Gitignored:
+# This machine's ports, e.g. {"stud": "/dev/cu.usbmodem1101", "laser": ...}. Gitignored:
 # port names differ between laptops (and between USB sockets).
 PORTS_PATH = Path(__file__).parent / "ports.json"
 
@@ -37,20 +38,37 @@ def configured_port(name):
         return None
 
 
-def find_port():
-    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+def save_port(name, port):
+    if configured_port(name) == port:
+        return
+    try:
+        saved = json.loads(PORTS_PATH.read_text())
+    except (FileNotFoundError, ValueError):
+        saved = {}
+    PORTS_PATH.write_text(json.dumps({**saved, name: port}) + "\n")
+
+
+def list_ports():
+    # Pro Micro / Uno show up as usbmodem; most Nano clones as usbserial.
+    pats = ["/dev/cu.usbmodem*", "/dev/cu.usbserial*", "/dev/cu.wchusbserial*"]
+    return sorted(p for pat in pats for p in glob.glob(pat))
+
+
+def find_port(exclude=()):
+    ports = [p for p in list_ports() if p not in exclude]
     return ports[0] if ports else None
 
 
-def resolve_port(explicit=None):
-    """--port wins, then host/ports.json (if that port exists right now),
-    then the first usbmodem found."""
+def resolve_port(explicit=None, exclude=()):
+    """Stud finder port: --port wins, then host/ports.json (if that port
+    exists right now), then the first board found that isn't in `exclude`."""
     if explicit:
         return explicit
+    exclude = (*exclude, configured_port("laser"))   # never grab the laser station
     saved = configured_port("stud")
-    if saved and os.path.exists(saved):
+    if saved and os.path.exists(saved) and saved not in exclude:
         return saved
-    return find_port()
+    return find_port(exclude)
 
 
 def port_users(port):
@@ -69,12 +87,49 @@ def port_users(port):
     return users
 
 
+def _wait_for(ser, wanted, timeout):
+    end = time.time() + timeout
+    while time.time() < end:
+        line = ser.readline().decode(errors="replace").strip()
+        if line.startswith(wanted):
+            return True
+    return False
+
+
+def find_laser_port():
+    """Laser station port: host/ports.json "laser" if that port exists,
+    else the board that answers ID with "ID LASER". None if not found."""
+    saved = configured_port("laser")
+    if saved and os.path.exists(saved):
+        return saved
+    import serial
+
+    for port in list_ports():
+        if port_users(port):
+            continue
+        try:
+            with serial.Serial(port, BAUD, timeout=0.1) as ser:
+                # Uno/Nano reset when the port opens and print READY on boot.
+                found = _wait_for(ser, "READY LASER", 2.5)
+                if not found:
+                    ser.write(b"ID\n")
+                    found = _wait_for(ser, "ID LASER", 1.0)
+        except (OSError, serial.SerialException):
+            continue
+        if found:
+            save_port("laser", port)
+            return port
+    return None
+
+
 class SerialLink:
-    def __init__(self, port=None, baud=BAUD):
+    def __init__(self, port=None, baud=BAUD, wait_ready=False, exclude=()):
         import serial  # pyserial; imported here so FakeLink works without it
 
         self._serial = serial
         self.explicit_port = port
+        self.exclude = tuple(exclude)
+        self.wait_ready = wait_ready
         self.baud = baud
         self.ser = None
         self.port = None
@@ -85,15 +140,18 @@ class SerialLink:
         self._thread.start()
 
     def _open(self):
-        port = resolve_port(self.explicit_port)
+        port = resolve_port(self.explicit_port, self.exclude)
         if port is None:
-            raise RuntimeError("No /dev/cu.usbmodem* port found. Is the Pro Micro plugged in?")
+            raise RuntimeError("No USB serial board found. Is the Pro Micro plugged in?")
         users = port_users(port)
         if users:
             raise RuntimeError(f"{port} is already open in another program: "
                                f"{', '.join(users)}. Close it (Ctrl+C in the pio monitor).")
         ser = self._serial.Serial(port, self.baud, timeout=0.1)
         fcntl.ioctl(ser.fileno(), termios.TIOCEXCL)  # later opens fail with "busy"
+        if self.wait_ready:
+            # Boards that reset on connect (Uno, Nano) drop commands until booted.
+            _wait_for(ser, "READY", 3.0)
         self.ser, self.port = ser, port
 
     def _read_loop(self):
@@ -175,11 +233,7 @@ def check_port(explicit=None):
               "(Ctrl+C in the pio monitor).", file=sys.stderr)
         return 1
     if configured_port("stud") != port:
-        try:
-            saved = json.loads(PORTS_PATH.read_text())
-        except (FileNotFoundError, ValueError):
-            saved = {}
-        PORTS_PATH.write_text(json.dumps({**saved, "stud": port}) + "\n")
+        save_port("stud", port)
         print(f"saved {port} in {PORTS_PATH.name}", file=sys.stderr)
     print(port)
     return 0

@@ -167,7 +167,8 @@ def main():
 
     cap = open_camera(args.camera)
     app = StudApp(serial=args.serial, port=args.port, tape=args.tape,
-                  fake_laser=args.fake_laser, wall_size=args.wall, ask_wall_size=True)
+                  fake_laser=args.fake_laser, wall_size=args.wall, ask_wall_size=True,
+                  laser_serial=args.laser_serial, laser_port=args.laser_port)
     hub = FrameHub(cap, app)
 
     server = ThreadingHTTPServer((args.host, args.http_port), make_handler(app, hub))
