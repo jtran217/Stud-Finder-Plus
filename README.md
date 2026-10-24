@@ -39,3 +39,11 @@ Test without hardware: `python host/main.py --tape --fake-laser`
 (draws a simulated laser line). The detector looks for bright red, so a dim
 room or lower exposure helps; check it with the laser mask view (`m`).
 
+## Arduino Readings 
+As you scan the wall, the Arduino will return various digits. The number's correspond to the following:
+| Reading   | Meaning                     |
+|-----------|-----------------------------|
+| ~1023     | On, no stud                 |
+| ~720–736  | Stud                        |
+| ~305      | Stud finder off             |
+| ~885      | Brief, at power-on (ignore) |
