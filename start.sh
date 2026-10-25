@@ -43,5 +43,16 @@ if [[ $FLASH == 1 ]]; then
   echo "   $PORT"
 fi
 
+# The port check above also finds the laser station when it's plugged in.
+if [[ " ${ARGS[*]-} " != *" --laser-"* ]] && $PY -c '
+import os, sys
+sys.path.insert(0, "host")
+from serial_link import configured_port
+p = configured_port("laser")
+sys.exit(0 if p and os.path.exists(p) else 1)'; then
+  echo "== laser station found, using it"
+  ARGS+=(--laser-serial)
+fi
+
 echo "== starting the web app (Ctrl+C to stop)"
 exec "$PY" host/web.py --tape --serial --port "$PORT" ${ARGS[@]+"${ARGS[@]}"}

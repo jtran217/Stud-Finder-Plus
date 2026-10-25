@@ -114,12 +114,17 @@ class TapeTracker:
 
     HUE_TOL = 10        # OpenCV hue runs 0-179
     MIN_AREA_PX = 300   # ignore specks smaller than this
+    SIZE_TOL = 1.4      # keep blobs within e^1.4 = 4x of the tape's size (blur, tilt)
+    LOCK_RADIUS_PX = 200  # first find after a click: nearest blob within this
 
     def __init__(self):
         self.lo = self.hi = None   # HSV bounds; hue may wrap past 179
         self.mask = None           # last threshold mask, for debugging
         self.last = None           # last tape center in pixels
         self.ref_area = None       # tape's blob area, learned on the first find
+        self.why = "no color picked"   # why the last find failed (for the log)
+        self.stats = {}            # blob counts/areas from the last find
+        self.sampled = None        # (h, s, v) of the click
 
     @property
     def ready(self):
@@ -135,6 +140,7 @@ class TapeTracker:
         self.lo = (h - self.HUE_TOL, max(s * 0.5, 50), max(v * 0.4, 40))
         self.hi = (h + self.HUE_TOL, 255, 255)
         self.last, self.ref_area = (x, y), None
+        self.sampled = (float(h), float(s), float(v))
         print(f"tape color sampled: HSV ({h:.0f}, {s:.0f}, {v:.0f})")
 
     def _threshold(self, hsv):
@@ -148,7 +154,9 @@ class TapeTracker:
 
     def find(self, frame, calib=None, margin_in=2.0):
         """Return the tape's 4 corner points in pixels (like a marker), or None."""
+        self.stats = {}
         if not self.ready:
+            self.why = "no color picked"
             return None
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = self._threshold(hsv)
@@ -164,7 +172,9 @@ class TapeTracker:
             mask &= wall
         self.mask = mask
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        self.stats["pixels"] = int(cv2.countNonZero(mask))
         if not contours:
+            self.why = "no pixels of that color on the wall"
             return None
         blobs = []
         for c in contours:
@@ -173,23 +183,39 @@ class TapeTracker:
                 continue
             (cx, cy), _, _ = rect = cv2.minAreaRect(c)
             blobs.append((area, (cx, cy), rect, c))
+        self.stats["blobs"] = len(blobs)
+        self.stats["biggest"] = int(max((b[0] for b in blobs), default=0))
         if not blobs:
+            self.why = f"only specks of that color (< {self.MIN_AREA_PX} px)"
             return None
         if self.ref_area is None:
-            # First find after a click: the blob under the click is the tape.
+            # First find after a click: the blob under the click is the tape,
+            # or failing that the nearest one (the finder may have moved a bit).
             under = [b for b in blobs if cv2.pointPolygonTest(b[3], self.last, False) >= 0]
             if not under:
+                near = [b for b in blobs if np.hypot(b[1][0] - self.last[0],
+                                                     b[1][1] - self.last[1]) < self.LOCK_RADIUS_PX]
+                under = sorted(near, key=lambda b: np.hypot(b[1][0] - self.last[0],
+                                                            b[1][1] - self.last[1]))
+            if not under:
+                self.why = "no blob of that color near the click"
                 return None
             best = under[0]
             self.ref_area = best[0]
+            print(f"tape locked on: {best[0]:.0f} px blob")
         else:
-            # Keep blobs roughly the tape's size (within ~2.7x), then prefer the
-            # one closest in size and position to where the tape was last seen.
+            # Keep blobs roughly the tape's size, then prefer the one closest in
+            # size and position to where the tape was last seen.
             size_err = lambda b: abs(np.log(b[0] / self.ref_area))
-            blobs = [b for b in blobs if size_err(b) < 1.0]
-            if not blobs:
+            sized = [b for b in blobs if size_err(b) < self.SIZE_TOL]
+            if not sized:
+                self.why = (f"blobs the wrong size (biggest {self.stats['biggest']} px, "
+                            f"tape is {self.ref_area:.0f} px)")
                 return None
+            blobs = sized
             best = min(blobs, key=lambda b: size_err(b) + np.hypot(
                 b[1][0] - self.last[0], b[1][1] - self.last[1]) / 300.0)
         self.last = best[1]
+        self.stats["area"] = int(best[0])
+        self.why = ""
         return cv2.boxPoints(best[2]).astype(np.float32)

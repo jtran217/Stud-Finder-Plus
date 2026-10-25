@@ -15,6 +15,7 @@ import numpy as np
 
 import laser
 import vision
+from diag import Diag
 from serial_link import FakeLink, SerialLink, find_laser_port
 
 # ---- Edit these to match tonight's setup -----------------------------------
@@ -28,10 +29,15 @@ SENSOR_OFFSET_IN = 0.0
 CAMERA_LATENCY_S = 0.0
 # Studs whose centers are closer than this are treated as the same stud.
 MERGE_IN = 1.0
-# A stud is two edges, one found sliding in from each side. Edges closer or
-# farther apart than this aren't paired into one stud.
-MIN_STUD_IN = 0.5
+# A stud is two edges, one found sliding in from each side. Edges farther
+# apart than this aren't paired. No minimum when the two edges were found
+# moving in opposite directions: camera delay shifts each edge toward the
+# other, so a fast sweep can make them overlap (the center is still right).
 MAX_STUD_IN = 3.5
+MAX_OVERLAP_IN = 1.0       # how far camera delay may push the two edges past each other
+MIN_STUD_IN_UNSURE = 0.3   # minimum when the direction of either edge is unknown
+EDGE_TTL_S = 20.0          # an unpaired edge is forgotten after this long
+MIN_SPEED_IN_S = 0.3       # slower than this, the direction counts as unknown
 # Laser calibration finds the wall edges by itself, starting from step 0
 # (where the motor sits when the board connects, aim it at the middle of the
 # wall). This just caps how far it may turn each way (900 steps ~ 80 deg).
@@ -39,6 +45,7 @@ LASER_MAX_STEPS = 900
 # ----------------------------------------------------------------------------
 
 CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"]
+STAGES = ["calibrate", "finder", "scan"]
 HISTORY_S = 3.0
 MAX_GAP_S = 0.3   # don't interpolate across gaps where the tracker was lost
 VIEWS = ["video", "object mask", "laser mask"]
@@ -78,32 +85,75 @@ class History:
         x0, x1 = self.x[i - 1], self.x[i]
         return x0 + (x1 - x0) * (t - t0) / (t1 - t0)
 
+    def v_at(self, t, span=0.15):
+        """Speed in in/s around time t (+ = moving right), or None."""
+        pts = [(ti, xi) for ti, xi in zip(self.t, self.x) if abs(ti - t) <= span]
+        if len(pts) < 3 or pts[-1][0] - pts[0][0] < span * 0.6:
+            return None
+        ts = np.array([p[0] for p in pts]) - t
+        xs = np.array([p[1] for p in pts])
+        return float(np.polyfit(ts, xs, 1)[0])
+
+    def last_seen(self):
+        return self.t[-1] if self.t else None
+
 
 class StudMap:
+    """Pairs stud edges into studs. Each S1 is an edge: the LED came on while
+    sliding onto the stud from one side. A stud is an edge found moving right
+    (its left side) plus one found moving left (its right side); the center
+    is their average, which also cancels camera delay. Recent unpaired edges
+    are kept, so a stray edge doesn't wipe out a half-found stud."""
+
     def __init__(self, log=print):
-        self.studs = []       # dicts: center, left, right, n
-        self.open_x = None    # x of the first edge, waiting for the other side's
+        self.studs = []   # dicts: center, left, right, n
+        self.edges = []   # unpaired: dicts x, dir (+1 right, -1 left, 0 unknown), t
         self.log = log
 
-    def handle(self, kind, x):
-        # Each S1 is a stud edge (the LED came on while sliding in from one
-        # side). S0 only means the finder was lifted or switched off: ignore it.
+    @property
+    def open_x(self):
+        return self.edges[-1]["x"] if self.edges else None
+
+    def handle(self, kind, x, direction=0, t=None):
+        """Returns (stud or None, what happened) for the log."""
         if kind != "S1":
-            return
-        if self.open_x is None:
-            self.open_x = x
-            self.log(f"edge @ {x:.2f} in, waiting for the other side")
-            return
-        width = abs(x - self.open_x)
-        if MIN_STUD_IN <= width <= MAX_STUD_IN:
-            left, right = sorted((self.open_x, x))
-            self.open_x = None
-            self._add(left, right)
-        else:
-            # Same side twice, or a different stud: start over from this edge.
-            self.log(f"edge @ {x:.2f} in doesn't pair with {self.open_x:.2f} in "
-                     f"({width:.2f} in apart), starting over")
-            self.open_x = x
+            return None, "S0 ignored (only S1 edges count)"
+        t = time.time() if t is None else t
+        self.edges = [e for e in self.edges if t - e["t"] < EDGE_TTL_S]
+
+        def fits(e):
+            gap = abs(e["x"] - x)
+            if gap > MAX_STUD_IN:
+                return False
+            if direction and e["dir"]:
+                if e["dir"] == direction:
+                    return False
+                # The left-side edge (found moving right) must be left of the
+                # right-side edge, give or take the overlap camera delay causes.
+                left_side = x if direction > 0 else e["x"]
+                right_side = e["x"] if direction > 0 else x
+                return right_side - left_side >= -MAX_OVERLAP_IN
+            return gap >= MIN_STUD_IN_UNSURE        # unsure: not the same spot twice
+
+        partners = [e for e in self.edges if fits(e)]
+        if partners:
+            e = min(partners, key=lambda e: abs(e["x"] - x))
+            self.edges.remove(e)
+            left, right = sorted((e["x"], x))
+            stud = self._add(left, right)
+            return stud, (f"paired with edge @ {e['x']:.2f} in "
+                          f"(dir {e['dir']:+d}, {t - e['t']:.1f} s ago) -> stud @ {stud['center']:.2f} in")
+        why = ("too far from the other edges: "
+               + ", ".join(f"{e['x']:.1f}(dir {e['dir']:+d})" for e in self.edges)
+               if self.edges else "first edge")
+        # the same edge passed again replaces the old reading
+        self.edges = [e for e in self.edges
+                      if not (e["dir"] == direction and abs(e["x"] - x) < 1.0)]
+        self.edges = (self.edges + [{"x": x, "dir": direction, "t": t}])[-6:]
+        side = {1: "left side (moving right)", -1: "right side (moving left)"}.get(
+            direction, "unknown side (not moving)")
+        self.log(f"edge @ {x:.2f} in, {side}: waiting for the other side")
+        return None, f"edge kept, {why}"
 
     def _add(self, left, right):
         center = (left + right) / 2
@@ -115,10 +165,12 @@ class StudMap:
                 s["right"] = (s["right"] * n + right) / (n + 1)
                 s["n"] = n + 1
                 self.log(f"refined stud @ {s['center']:.2f} in (n={s['n']})")
-                return
-        self.studs.append({"center": center, "left": left, "right": right, "n": 1})
+                return s
+        s = {"center": center, "left": left, "right": right, "n": 1}
+        self.studs.append(s)
         self.studs.sort(key=lambda s: s["center"])
-        self.log(f"new stud @ {center:.2f} in  (width {right - left:.2f} in)")
+        self.log(f"new stud @ {center:.2f} in  (edges {left:.2f} / {right:.2f})")
+        return s
 
 
 def draw_studs(frame, calib, studs, highlight=None):
@@ -146,6 +198,7 @@ class StudApp:
         station); without it, laser commands go to the stud finder's board."""
         self.lock = threading.RLock()
         self.messages = deque(maxlen=60)   # (time, text) for the UI log
+        self.diag = Diag()
         laser.log = self.log
 
         self.laser_link = None
@@ -155,6 +208,7 @@ class StudApp:
                 raise RuntimeError("Laser station not found. Is it plugged in and flashed "
                                    "with firmware/laser_station?")
             self.laser_link = SerialLink(lport, wait_ready=True)
+            self.laser_link.tap = lambda d, line: self._serial_tap("laser", d, line)
             self.log(f"laser station: {lport}")
 
         if serial:
@@ -162,6 +216,7 @@ class StudApp:
             self.link = SerialLink(port, exclude=exclude)
         else:
             self.link = FakeLink()
+        self.link.tap = lambda d, line: self._serial_tap("stud", d, line)
         self.log(f"stud signal: {self.link.port}")
         self.rig = None
         if fake_laser:
@@ -184,7 +239,22 @@ class StudApp:
         self.lcal = laser.LaserCalibration(self.stepper, LASER_MAX_STEPS)
         self.aimer = laser.Aimer(self.stepper, self.lcal)
         self.laser_on = False
+        # The page asks for a laser calibration on every launch, even with a
+        # saved one loaded, so the demo always starts from a fresh sweep.
+        self.lcal_this_run = False
+        # The web page walks through setup first: it confirms the saved box on
+        # every launch and only turns stud detection on at the scan step.
+        self.guided = ask_wall_size
+        self.forget_box = False   # after a restart, the page draws a new box
+        # The step on screen lives here (not in the page) so every open tab
+        # shows the same step and agrees on whether studs are being detected.
+        self.stage = "calibrate" if ask_wall_size else "scan"
+        self.laser_skipped = False
+        self.finder_seen = False  # marker mode: marker 10 seen at least once
+        self.scanning = not ask_wall_size
         self.aim_index = None
+        # Last stud found, so the page can flash it: seq goes up each time.
+        self.found = {"seq": 0, "index": None, "new": False, "aimed": False}
 
         self.history = History()
         self.studmap = StudMap(self.log)
@@ -194,16 +264,69 @@ class StudApp:
         self.laser_x = None
         self.fps = 0.0
         self._last = None
+        # diagnostics bookkeeping
+        self.counts = {"S1": 0, "S0": 0, "edges": 0, "paired": 0, "ignored": 0,
+                       "not_seen": 0, "frames": 0, "tracker_seen": 0, "laser_seen": 0}
+        self._beat_t = 0.0
+        self._beat_counts = dict(self.counts)
+        self._tracker_lost_since = None
+        self._tracker_lost_snapped = False
+        self._laser_was_seen = None
+        self._tx_pending = None      # (t, cmd) laser command waiting for its OK
+        self.last_stud_event = None  # (t, text) for the page's diagnostics
 
     # ------------------------------------------------------------- helpers --
     def log(self, text):
         print(text)
         self.messages.append((time.time(), text))
+        self.diag.write("app", text)
+
+    def _serial_tap(self, board, direction, line):
+        self.diag.write("serial", f"{board} {direction}: {line}")
 
     def send(self, cmd):
         (self.laser_link or self.link).send(cmd)
+        if self.laser_link is not None and not cmd.startswith("ID"):
+            self._tx_pending = (time.time(), cmd)
         if self.rig is not None:
             self.rig.command(cmd)
+
+    # ---------------------------------------------------------------- flow --
+    def flow(self):
+        """Which setup steps are done and which step is on screen."""
+        laser_needed = (self.rig is not None or self.laser_link is not None) and not self.laser_skipped
+        laser_done = not laser_needed or (self.lcal.ready and self.lcal_this_run)
+        size_done = self.wall_size_set
+        box_done = self.wall_size_set and not self.clicking
+        finder_ready = (self.tape.ready if self.tape is not None else self.finder_seen)
+        calibrated = size_done and box_done and laser_done
+        allowed = 0 if not calibrated else 1 if not finder_ready else 2
+        stage = STAGES[min(STAGES.index(self.stage), allowed)]
+        return {
+            "stage": stage, "allowed_index": allowed, "size_done": size_done,
+            "box_done": box_done, "laser_needed": laser_needed, "laser_done": laser_done,
+            "laser_failed": (not self.lcal.running and not self.lcal.ready
+                             and "FAIL" in self.lcal.status),
+            "finder_ready": finder_ready, "calibrated": calibrated,
+        }
+
+    def _update_flow(self):
+        """Keep the stored step within what's allowed (e.g. the box was
+        reopened from step 3: stay on step 1 until the user moves on) and turn
+        stud detection on only on the scan step."""
+        f = self.flow()
+        if not self.guided:   # OpenCV window (main.py): no steps, always detecting
+            self.scanning = True
+            return f
+        if f["stage"] != self.stage:
+            self.diag.write("flow", f"step {self.stage} -> {f['stage']} (earlier step not done)",
+                            **{k: v for k, v in f.items() if k != "stage"})
+            self.stage = f["stage"]
+        scanning = self.stage == "scan" and not self.lcal.running
+        if scanning != self.scanning:
+            self.scanning = scanning
+            self.log("stud detection on" if scanning else "stud detection paused (not on the scan step)")
+        return f
 
     @property
     def wall_size(self):
@@ -244,84 +367,155 @@ class StudApp:
         """Named actions shared by the keyboard and the web buttons."""
         with self.lock:
             now = time.time()
-            if name == "set_wall":
-                try:
-                    w, h = float(arg["width"]), float(arg["height"])
-                except (TypeError, KeyError, ValueError):
-                    self.log("wall size: enter two numbers")
-                    return
-                if not (1 <= w <= 600 and 1 <= h <= 600):
-                    self.log("wall size: use inches between 1 and 600")
-                    return
-                self.calib.set_wall(corners_for(w, h))
-                self.wall_size_set = True
-                if self.rig is not None:
-                    self.rig.aim_in = w / 2
-                if self.calib.ready and not self.clicking and self.frame_size:
-                    self.calib.save(self.frame_size)   # clicks kept, inches updated
-                self.log(f"scan area set to {w:g} x {h:g} in")
-            elif name == "set_corners":
-                # 4 corners from the web page's box, as fractions of the frame,
-                # order TL, TR, BR, BL.
-                if not self.frame_size or not self.wall_size_set:
-                    return
-                try:
-                    pts = [(float(x) * self.frame_size[0], float(y) * self.frame_size[1])
-                           for x, y in arg["corners"]]
-                    assert len(pts) == 4
-                except (TypeError, KeyError, ValueError, AssertionError):
-                    self.log("corners: expected 4 points")
-                    return
-                self.clicks = pts
-                self.calib.set_pixels(pts)
-                self.calib.save(self.frame_size)
-                self.clicking = False
-                self.log("wall corners saved")
-            elif name == "recalibrate":
-                self.clicks = []
-                self.clicking = True
-            elif name == "undo_click" and self.clicking and self.clicks:
-                self.clicks.pop()
-            elif name == "reset_studs":
-                self.studmap = StudMap(self.log)
-                self.aim_index = None
-                self.log("studs cleared")
-            elif name == "stud_signal" and isinstance(self.link, FakeLink):
-                self.link.toggle()
-            elif name == "resample_object" and self.tape is not None:
+            if name != "view":
+                self.diag.write("cmd", name, arg=arg if not isinstance(arg, dict) else
+                                {k: v for k, v in arg.items() if k != "corners"})
+            self._command(name, arg, now)
+            self._update_flow()
+
+    def _command(self, name, arg, now):
+        if name == "set_wall":
+            try:
+                w, h = float(arg["width"]), float(arg["height"])
+            except (TypeError, KeyError, ValueError):
+                self.log("wall size: enter two numbers")
+                return
+            if not (1 <= w <= 600 and 1 <= h <= 600):
+                self.log("wall size: use inches between 1 and 600")
+                return
+            self.calib.set_wall(corners_for(w, h))
+            self.wall_size_set = True
+            if self.rig is not None:
+                self.rig.aim_in = w / 2
+            if self.calib.ready and not self.clicking and self.frame_size:
+                self.calib.save(self.frame_size)   # clicks kept, inches updated
+            self.log(f"scan area set to {w:g} x {h:g} in")
+        elif name == "set_corners":
+            # 4 corners from the web page's box, as fractions of the frame,
+            # order TL, TR, BR, BL.
+            if not self.frame_size or not self.wall_size_set:
+                return
+            try:
+                pts = [(float(x) * self.frame_size[0], float(y) * self.frame_size[1])
+                       for x, y in arg["corners"]]
+                assert len(pts) == 4
+            except (TypeError, KeyError, ValueError, AssertionError):
+                self.log("corners: expected 4 points")
+                return
+            self.clicks = pts
+            self.forget_box = False
+            self.calib.set_pixels(pts)
+            self.calib.save(self.frame_size)
+            self.clicking = False
+            self.log("wall corners saved")
+        elif name == "recalibrate":
+            self.clicks = []
+            self.clicking = True
+            self.stage = "calibrate"
+        elif name == "go":
+            if arg in STAGES:
+                self.stage = arg   # clamped to what's allowed in _update_flow
+        elif name == "skip_laser":
+            self.laser_skipped = True
+            self.log("laser skipped: map only")
+        elif name == "undo_click" and self.clicking and self.clicks:
+            self.clicks.pop()
+        elif name == "restart_setup":
+            # Back to step 1 with nothing carried over from this session.
+            self.wall_size_set = False
+            self.clicks = []
+            self.clicking = True
+            self.forget_box = True
+            if self.tape is not None:
                 self.tape.lo = self.tape.hi = None
-            elif name == "view":
-                self.view = arg if arg in VIEWS else \
-                    VIEWS[(VIEWS.index(self.view) + 1) % len(VIEWS)]
-            elif name == "laser_calibrate":
-                if not self.calib.ready:
-                    self.log("finish the wall setup first")
-                    return
-                if self.rig is None and self.laser_link is None and isinstance(self.link, FakeLink):
-                    self.log("note: no laser connected (--serial) or simulated "
-                             "(--fake-laser); calibration needs a red line on the wall")
-                self.log("laser calibration: sweeping the motor ...")
-                self.aimer.status = ""
-                self.lcal.start(now)
-                self.laser_on = True
-            elif name in ("next_stud", "aim"):
-                if self.lcal.running:
-                    return
-                studs = self.studmap.studs
-                if not studs:
-                    self.aimer.status = "no studs found yet"
-                    return
-                if name == "aim":
-                    self.aim_index = int(arg) % len(studs)
-                else:
-                    self.aim_index = 0 if self.aim_index is None else \
-                        (self.aim_index + 1) % len(studs)
-                s = studs[self.aim_index]
-                self.aimer.aim(s["center"], now, label=f"Stud {self.aim_index + 1}")
-                self.laser_on = self.laser_on or self.aimer.running
-            elif name == "laser_toggle":
-                self.laser_on = not self.laser_on
-                self.send(f"L {int(self.laser_on)}")
+            self.studmap = StudMap(self.log)
+            self.aim_index = None
+            self.found = {"seq": self.found["seq"], "index": None, "new": False, "aimed": False}
+            self.stage = "calibrate"
+            self.laser_skipped = False
+            self.finder_seen = False
+            self.lcal_this_run = False
+            self.lcal.settler = None   # stop a sweep in progress
+            self.lcal.status = "not calibrated (press k)"
+            self.aimer.settler = None
+            self.aimer.status = ""
+            self.laser_on = False
+            self.send("L 0")
+            self.log("setup restarted from the beginning")
+        elif name == "reset_studs":
+            self.studmap = StudMap(self.log)
+            self.aim_index = None
+            self.found = {"seq": self.found["seq"], "index": None, "new": False, "aimed": False}
+            self.log("studs cleared")
+        elif name == "stud_signal" and isinstance(self.link, FakeLink):
+            self.link.toggle()
+        elif name == "resample_object" and self.tape is not None:
+            self.tape.lo = self.tape.hi = None
+            self.stage = "finder"
+        elif name == "view":
+            self.view = arg if arg in VIEWS else \
+                VIEWS[(VIEWS.index(self.view) + 1) % len(VIEWS)]
+        elif name == "laser_calibrate":
+            if not self.calib.ready:
+                self.log("finish the wall setup first")
+                return
+            if self.rig is None and self.laser_link is None and isinstance(self.link, FakeLink):
+                self.log("note: no laser connected (--serial) or simulated "
+                         "(--fake-laser); calibration needs a red line on the wall")
+            self.log("laser calibration: sweeping the motor ...")
+            self.aimer.status = ""
+            self.laser_skipped = False
+            self.stage = "calibrate"
+            self.lcal.start(now)
+            self.lcal_this_run = True
+            self.laser_on = True
+        elif name in ("next_stud", "aim"):
+            if self.lcal.running:
+                return
+            studs = self.studmap.studs
+            if not studs:
+                self.aimer.status = "no studs found yet"
+                return
+            if name == "aim":
+                self.aim_index = int(arg) % len(studs)
+            else:
+                self.aim_index = 0 if self.aim_index is None else \
+                    (self.aim_index + 1) % len(studs)
+            self._aim(self.aim_index, now)
+        elif name == "laser_toggle":
+            self.laser_on = not self.laser_on
+            self.send(f"L {int(self.laser_on)}")
+
+    def _aim(self, index, now):
+        self.aim_index = index
+        s = self.studmap.studs[index]
+        self.aimer.aim(s["center"], now, label=f"Stud {index + 1}")
+        self.laser_on = self.laser_on or self.aimer.running
+
+    def _stud_found(self, stud, now):
+        """A stud was just added or refined: tell the page, point the laser at it."""
+        index = self.studmap.studs.index(stud)
+        aimed = self.lcal.ready and not self.lcal.running
+        self.diag.write("motor", f"auto-aim at stud {index + 1} ({stud['center']:.2f} in)"
+                        if aimed else "no auto-aim: laser not calibrated",
+                        target=stud["center"], motor=self.stepper.pos)
+        if aimed:
+            self._aim(index, now)
+        elif self.aim_index is not None and self.aim_index >= index and stud["n"] == 1:
+            self.aim_index += 1   # a new stud to the left shifts the numbering
+        self.found = {"seq": self.found["seq"] + 1, "index": index,
+                      "new": stud["n"] == 1, "aimed": aimed}
+
+    def _laser_station_restarted(self):
+        # A reset Uno calls wherever the motor is "step 0", so the old table is
+        # off by however far it had turned. Make the user recalibrate.
+        self.lcal.points = []
+        self.lcal.settler = None
+        self.lcal.status = "laser station restarted, press Calibrate"
+        self.stepper.pos = None
+        self.aimer.settler = None
+        self.laser_on = False
+        self.log("laser station restarted (USB drop or power dip?): recalibrate the laser")
 
     # ----------------------------------------------------- per-frame work --
     def process(self, frame, now=None):
@@ -331,7 +525,7 @@ class StudApp:
             if self.frame_size is None:
                 self.frame_size = (frame.shape[1], frame.shape[0])
                 if self.calib.load(self.frame_size):
-                    self.clicking = False
+                    self.clicking = self.guided   # page shows the saved box to confirm
                     self.wall_size_set = True
                     w, h = self.wall_size
                     self.log(f"loaded saved wall calibration ({w:g} x {h:g} in)")
@@ -350,18 +544,21 @@ class StudApp:
                 self.tape_click = None
 
             # --- where is the stud finder? ---
-            self.markers = vision.detect(frame)
             self.finder_box = None
             if self.tape is not None:
-                self.markers.pop(vision.FINDER_ID, None)
+                self.markers = {}   # tape mode doesn't use markers; skip the work
                 self.finder_box = self.tape.find(frame, self.calib)
             else:
+                self.markers = vision.detect(frame)
                 self.finder_box = self.markers.pop(vision.FINDER_ID, None)
+                if self.finder_box is not None:
+                    self.finder_seen = True
             self.x = vision.finder_x(
                 {vision.FINDER_ID: self.finder_box} if self.finder_box is not None else {},
                 self.calib, SENSOR_OFFSET_IN)
             if self.x is not None:
                 self.history.add(now - CAMERA_LATENCY_S, self.x)
+            self._watch_tracker(now)
 
             # --- laser ---
             self.laser_x = self.detector.find(frame, self.calib)
@@ -372,30 +569,130 @@ class StudApp:
                 xs = self.calib.wall_in[:, 0]
                 if not (xs.min() <= x_box <= xs.max()):
                     x_box = None
+            was_running = self.lcal.running
             self.lcal.update(now, x_box)
+            if was_running and not self.lcal.running and not self.lcal.ready:
+                self.diag.snap("laser_calibration_failed")
             self.aimer.update(now, self.laser_x)
+            self._watch_laser(now)
 
-            # --- laser station replies (OK lines are routine, skip them) ---
+            # --- laser station replies ---
             if self.laser_link is not None:
                 while not self.laser_link.events.empty():
                     _, line = self.laser_link.events.get()
-                    if not line.startswith("OK"):
+                    if line.startswith("OK"):
+                        self._tx_pending = None   # acknowledged
+                    else:
                         self.log(f"laser station: {line}")
+                    if line.startswith(("READY", "serial reconnected")):
+                        self._laser_station_restarted()
 
             # --- stud signal events ---
+            self._update_flow()
             while not self.link.events.empty():
                 t, line = self.link.events.get()
                 kind = line.split()[0]
                 if kind in ("S1", "S0"):
-                    ex = self.history.x_at(t)
-                    if ex is None:
-                        self.log(f"{kind} ignored: {self.finder_name} not seen at that moment")
-                    else:
-                        self.studmap.handle(kind, ex)
+                    self._stud_event(kind, line, t, now)
                 else:
-                    self.log(f"arduino: {line}")
+                    self.log(f"stud finder board: {line}")
 
-            return self._draw(frame)
+            self._heartbeat(now)
+            out = self._draw(frame)
+            self.diag.flush_snaps(out if self.view == "video" else frame, now)
+            return out
+
+    # ------------------------------------------------------- diagnostics --
+    def _stud_event(self, kind, line, t, now):
+        """One S1/S0 from the board: find where the finder was, then pair it."""
+        self.counts[kind] += 1
+        if not self.scanning:
+            self.counts["ignored"] += 1
+            self.diag.write("stud", f"{line} ignored: not on the scan step", step=self.stage)
+            if kind == "S1":
+                self.last_stud_event = (now, "edge ignored: go to the Scan step first")
+            return
+        ex = self.history.x_at(t)
+        if ex is None:
+            self.counts["not_seen"] += 1
+            seen = self.history.last_seen()
+            age = f"{t - seen:.2f} s before" if seen else "never"
+            self.log(f"{kind} ignored: {self.finder_name} not seen at that moment "
+                     f"(last seen {age})")
+            self.diag.write("stud", f"{line} ignored: finder not tracked at that moment",
+                            last_seen=age, tracker_why=getattr(self.tape, "why", None))
+            if kind == "S1":
+                self.diag.snap("edge_ignored_finder_not_seen")
+                self.last_stud_event = (now, "edge ignored: camera lost the stud finder")
+            return
+        v = self.history.v_at(t)
+        direction = 0 if v is None or abs(v) < MIN_SPEED_IN_S else (1 if v > 0 else -1)
+        stud, what = self.studmap.handle(kind, ex, direction, t)
+        if kind == "S1":
+            self.counts["edges"] += 1
+            self.last_stud_event = (now, what)
+        self.diag.write("stud", f"{line} -> {what}", x=ex, v=v, dir=direction,
+                        delay=now - t, open_edges=len(self.studmap.edges))
+        # An edge from the other side was close by but they didn't pair: worth a look.
+        if kind == "S1" and stud is None and any(
+                e["dir"] == -direction and direction and abs(e["x"] - ex) < MAX_STUD_IN + 2
+                for e in self.studmap.edges[:-1]):
+            self.diag.snap("edge_not_paired_near_other_side")
+        if stud is not None:
+            self.counts["paired"] += 1
+            self._stud_found(stud, now)
+
+    def _watch_tracker(self, now):
+        self.counts["frames"] += 1
+        if self.x is not None:
+            self.counts["tracker_seen"] += 1
+        needed = self.stage in ("finder", "scan") and self.flow()["finder_ready"]
+        if self.x is None and needed:
+            if self._tracker_lost_since is None:
+                self._tracker_lost_since = now
+                self.diag.write("tracker", "lost", why=getattr(self.tape, "why", "marker not seen"),
+                                **(self.tape.stats if self.tape else {}))
+            elif now - self._tracker_lost_since > 2.0 and not self._tracker_lost_snapped:
+                self._tracker_lost_snapped = True
+                self.diag.snap("tracker_lost_2s")
+        elif self.x is not None and self._tracker_lost_since is not None:
+            self.diag.write("tracker", "found again", x=self.x,
+                            lost_for=now - self._tracker_lost_since,
+                            **(self.tape.stats if self.tape else {}))
+            self._tracker_lost_since = None
+            self._tracker_lost_snapped = False
+
+    def _watch_laser(self, now):
+        seen = self.laser_x is not None
+        if seen:
+            self.counts["laser_seen"] += 1
+        if self.laser_on and seen != self._laser_was_seen:
+            self.diag.write("laser", "line seen" if seen else "line not seen",
+                            x=self.laser_x, why=self.detector.why or None, **self.detector.stats)
+            self._laser_was_seen = seen
+        # A move the laser station never acknowledged: it's stuck or unplugged.
+        if self._tx_pending and now - self._tx_pending[0] > 1.0:
+            self.log(f"warning: laser station didn't answer '{self._tx_pending[1]}' "
+                     "(unplugged, crashed, or another program has the port?)")
+            self.diag.snap("laser_station_no_reply")
+            self._tx_pending = None
+
+    def _heartbeat(self, now):
+        if now - self._beat_t < 1.0:
+            return
+        c, b = self.counts, self._beat_counts
+        frames = max(c["frames"] - b["frames"], 1)
+        self.diag.write(
+            "beat", self.stage, fps=self.fps, scanning=self.scanning,
+            finder_x=self.x, finder_seen_pct=100 * (c["tracker_seen"] - b["tracker_seen"]) / frames,
+            tracker_why=(getattr(self.tape, "why", "") or None) if self.x is None else None,
+            laser_x=self.laser_x, laser_seen_pct=100 * (c["laser_seen"] - b["laser_seen"]) / frames,
+            laser_on=self.laser_on, motor=self.stepper.pos, lcal=self.lcal.status,
+            aim=self.aimer.status or None, studs=len(self.studmap.studs),
+            open_edges=len(self.studmap.edges), S1=c["S1"], S0=c["S0"],
+            ignored=c["ignored"], not_seen=c["not_seen"])
+        self._beat_t = now
+        self._beat_counts = dict(c)
 
     def _draw(self, frame):
         if self.view == "object mask" and self.tape is not None and self.tape.mask is not None:
@@ -416,7 +713,19 @@ class StudApp:
                 y0, y1 = self.calib.y_range
                 top, bot = self.calib.in_to_px([(self.laser_x, y0),
                                                 (self.laser_x, y1)]).astype(int)
-                cv2.line(frame, tuple(top), tuple(bot), (255, 255, 0), 1)
+                cv2.line(frame, tuple(top), tuple(bot), (255, 255, 0),
+                         3 if self.lcal.running else 1)
+        if self.calib.ready and self.lcal.running:
+            # Show the sweep: every measured point so far, along the box's middle.
+            y_mid = sum(self.calib.y_range) / 2
+            for _, x in self.lcal.points:
+                p = self.calib.in_to_px([(x, y_mid)]).astype(int)[0]
+                cv2.circle(frame, tuple(p), 12, (0, 0, 255), -1)
+                cv2.circle(frame, tuple(p), 12, (255, 255, 255), 2)
+            cv2.putText(frame, self.lcal.status.replace("calibrating: ", "Calibrating: "),
+                        (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 6)
+            cv2.putText(frame, self.lcal.status.replace("calibrating: ", "Calibrating: "),
+                        (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3)
         return frame
 
     # --------------------------------------------------------------- state --
@@ -443,6 +752,8 @@ class StudApp:
     def state(self):
         """Everything the web page shows, as plain JSON-able data."""
         with self.lock:
+            flow = self._update_flow()
+            now = time.time()
             corners = [[float(v) for v in p] for p in self.calib.wall_in]
             xs = [p[0] for p in corners]
             ys = [p[1] for p in corners]
@@ -456,7 +767,8 @@ class StudApp:
                 # saved corner positions as fractions of the frame (for the box editor)
                 "corners_norm": ([[float(x) / self.frame_size[0], float(y) / self.frame_size[1]]
                                   for x, y in self.calib.px]
-                                 if self.calib.px is not None and self.frame_size else None),
+                                 if self.calib.px is not None and self.frame_size
+                                 and not self.forget_box else None),
                 "wall_size": self.wall_size,
                 "wall_size_set": self.wall_size_set,
                 "tracker": {
@@ -472,14 +784,35 @@ class StudApp:
                 },
                 "studs": [dict(s) for s in self.studmap.studs],
                 "open_x": self.studmap.open_x,
+                "open_edges": [{"x": e["x"], "dir": e["dir"]} for e in self.studmap.edges],
+                "scanning": self.scanning,
+                "stage": flow["stage"],
+                "flow": flow,
+                "diag": {
+                    "log": str(self.diag.dir) if self.diag.dir else None,
+                    "counts": dict(self.counts),
+                    "tracker_why": (getattr(self.tape, "why", "") or None) if self.x is None else None,
+                    "laser_why": self.detector.why or None,
+                    "laser_stats": self.detector.stats,
+                    "last_stud_event": ({"ago": now - self.last_stud_event[0],
+                                         "text": self.last_stud_event[1]}
+                                        if self.last_stud_event else None),
+                },
+                "found": dict(self.found),
                 "laser": {
                     "simulated": self.rig is not None,
+                    # a laser to calibrate: simulated or the laser station
+                    "available": self.rig is not None or self.laser_link is not None,
                     "port": self.laser_link.port if self.laser_link else None,
                     "x": self.laser_x,
                     "on": self.laser_on,
                     "calibrated": self.lcal.ready,
+                    "calibrated_this_run": self.lcal.ready and self.lcal_this_run,
                     "calibrating": self.lcal.running,
                     "status": self.lcal.status,
+                    "points": [float(x) for _, x in self.lcal.points],
+                    "phase": getattr(self.lcal, "phase", None) if self.lcal.running else None,
+                    "todo": len(getattr(self.lcal, "todo", []) or []) if self.lcal.running else 0,
                     "aiming": self.aimer.running,
                     "aim_status": self.aimer.status,
                     "aim_index": self.aim_index,
@@ -498,3 +831,5 @@ class StudApp:
             time.sleep(1.0)
             self.laser_link.close()
         self.link.close()
+        self.diag.write("app", "closed")
+        self.diag.close()

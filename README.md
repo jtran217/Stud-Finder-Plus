@@ -87,7 +87,8 @@ Wiring: pins 4-7 -> ULN2003 IN1-IN4; pin 9 -> 1k -> 2N2222 base (laser);
 driver board + laser powered from the 5V power module; **all grounds joined**.
 Run the laptop with `--laser-serial` (finds the station by its `ID LASER`
 reply and remembers it in `host/ports.json`, so the stud finder never grabs
-that port) or `--laser-port /dev/cu.xxx`. With `start.sh`, add `--laser-serial`:
+that port) or `--laser-port /dev/cu.xxx`. `start.sh` adds `--laser-serial` by itself
+when the station is plugged in. Without it:
 ```
 python host/web.py --tape --serial --laser-serial
 ```

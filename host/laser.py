@@ -17,22 +17,31 @@ log = print   # app.py swaps this for its own logger
 
 
 class LaserDetector:
-    """Finds the vertical red line. Works on a straight-on warp of the wall
-    and picks the column with the most red pixels. Dim the room if it can't
-    see the laser."""
+    """Finds the vertical red line on a straight-on warp of the wall.
+
+    Works by contrast, not fixed color cutoffs, so a faint line in daylight
+    still shows: each pixel gets a redness score (red minus the stronger of
+    green/blue), each row has its own median subtracted (evens out lighting),
+    then the columns are averaged. The line is the column that stands out
+    from the wall on either side of it."""
 
     PX_PER_IN = 20
-    MARGIN_IN = 2.0     # look a bit past the corner crosses
-    S_MIN = 90
-    V_MIN = 120
-    MIN_FRAC = 0.15     # line has to cover this much of the wall height
+    MARGIN_IN = 2.0       # look a bit past the corner crosses
+    BASELINE_IN = 4.0     # wall color is judged over this width around each column
+    MIN_CONTRAST = 2.5    # peak must be this much redder than its surroundings (0-255 scale)
+    MIN_SNR = 6.0         # ...and this many times the column-to-column noise
+    MIN_FRAC = 0.3        # line has to cover this much of the wall height
 
     def __init__(self):
         self.mask = None
+        self.stats = {}   # numbers behind the last decision, for the log
+        self.why = ""
 
     def find(self, frame, calib):
         """x of the laser line in wall inches, or None."""
+        self.stats = {}
         if not calib.ready:
+            self.why = "no wall box"
             return None
         (x0, y0), (x1, y1) = calib.wall_in.min(0), calib.wall_in.max(0)
         x0 -= self.MARGIN_IN
@@ -40,21 +49,42 @@ class LaserDetector:
         p = self.PX_PER_IN
         w, h = int((x1 - x0) * p), int((y1 - y0) * p)
         to_wall = np.array([[p, 0, -x0 * p], [0, p, -y0 * p], [0, 0, 1]]) @ calib.H
-        wall = cv2.warpPerspective(frame, to_wall, (w, h))
+        wall = cv2.warpPerspective(frame, to_wall, (w, h)).astype(np.float32)
 
-        hsv = cv2.cvtColor(wall, cv2.COLOR_BGR2HSV)
-        # red wraps around hue 0
-        mask = (cv2.inRange(hsv, (0, self.S_MIN, self.V_MIN), (10, 255, 255)) |
-                cv2.inRange(hsv, (170, self.S_MIN, self.V_MIN), (179, 255, 255)))
-        self.mask = mask
+        b, g, r = cv2.split(wall)
+        red = r - np.maximum(g, b)
+        red -= np.median(red, axis=1, keepdims=True)
+        # "Laser mask" view: how much redder than its row each pixel is
+        self.mask = np.clip(red * 12, 0, 255).astype(np.uint8)
 
-        cols = mask.sum(axis=0) / 255.0
-        peak = int(cols.argmax())
-        if cols[peak] < self.MIN_FRAC * h:
+        prof = red.mean(axis=0)
+        k = int(self.BASELINE_IN * p) | 1
+        if w <= k:
             return None
-        # weighted center over +-0.5 in around the peak for sub-pixel x
-        a, b = max(peak - p // 2, 0), min(peak + p // 2 + 1, w)
-        cx = float((np.arange(a, b) * cols[a:b]).sum() / cols[a:b].sum())
+        pad = np.pad(prof, k // 2, mode="edge")
+        base = np.median(np.lib.stride_tricks.sliding_window_view(pad, k), axis=1)
+        lift = prof - base
+        noise = max(1.4826 * float(np.median(np.abs(lift - np.median(lift)))), 0.3)
+
+        peak = int(lift.argmax())
+        self.stats = {"contrast": float(lift[peak]), "noise": noise,
+                      "snr": float(lift[peak] / noise), "peak_in": float(x0 + (peak + 0.5) / p)}
+        if lift[peak] < max(self.MIN_CONTRAST, self.MIN_SNR * noise):
+            self.why = "no column stands out enough"
+            return None
+        # the line should run down most of the wall, not be one red blob
+        a, b2 = max(peak - p // 4, 0), min(peak + p // 4 + 1, w)
+        band = red[:, a:b2].mean(axis=1) - base[a:b2].mean()   # same averaging on both sides
+        cover = float((band > 0.4 * lift[a:b2].mean()).mean())
+        self.stats["cover"] = cover
+        if cover < self.MIN_FRAC:
+            self.why = "red patch, but not a line down the wall"
+            return None
+        self.why = ""
+        # weighted center over +-0.75 in around the peak for sub-pixel x
+        a, b2 = max(peak - 3 * p // 4, 0), min(peak + 3 * p // 4 + 1, w)
+        wts = np.clip(lift[a:b2], 0, None)
+        cx = float((np.arange(a, b2) * wts).sum() / wts.sum())
         return float(x0 + (cx + 0.5) / p)
 
 
