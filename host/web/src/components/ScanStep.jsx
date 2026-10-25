@@ -1,5 +1,6 @@
 import { fmt } from "../geometry.js";
 import WallRuler from "./WallRuler.jsx";
+import Spinner from "./Spinner.jsx";
 
 // Step 3: sweep the wall. Each stud found shows up on the map, and the laser
 // jumps to it on its own.
@@ -59,7 +60,11 @@ export default function ScanStep({ state, command, flash, onBack }) {
 
       {laser.available !== false && (laser.aim_status || canAim) && (
         <p className="aim">
-          <span className="beam-dot" aria-hidden="true" />
+          {laser.aiming ? (
+            <Spinner type="ball-pulse" tone="laser" size="xs" label="Laser moving" />
+          ) : (
+            <span className="beam-dot" aria-hidden="true" />
+          )}
           {laser.aim_status || "The laser will point at each stud as you find it."}
         </p>
       )}

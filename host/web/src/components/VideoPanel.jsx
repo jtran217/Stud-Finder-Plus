@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import BoxEditor from "./BoxEditor.jsx";
+import Spinner from "./Spinner.jsx";
 
 const STILL = new URLSearchParams(location.search).has("still");
 
@@ -21,26 +22,8 @@ export default function VideoPanel({ state, flow, flash, online, command, click,
   // Clicks on the picture pick the stud finder's color, only on step 2.
   const picking = flow.stage === "finder" && state.tracker.mode === "object" && !state.tracker.ready;
 
-  let bannerText = null;
-  let mode = "size";
-  if (flow.stage === "calibrate") {
-    if (!flow.sizeDone) bannerText = "Enter the size of the scan area in the panel on the right";
-    else if (editing) {
-      mode = "corners";
-      bannerText = box
-        ? "Check each corner sits on the center of its tape cross, then press Enter to confirm"
-        : "Drag across the video to draw a box over the 4 tape crosses";
-    } else if (state.laser.calibrating) {
-      mode = "laser";
-      bannerText = "Calibrating: watch the laser sweep across the wall. Red dots mark each measured point.";
-    } else if (flow.laserCanStart) {
-      mode = "laser";
-      bannerText = "Press Space to start calibration";
-    }
-  } else if (picking) {
-    mode = "object";
-    bannerText = "Click the colored tag on the stud finder";
-  }
+  const hint = useVideoHint({ state, flow, editing, box, picking });
+  const loaded = useFirstFrame(imgRef, src);
 
   const onImageClick = (e) => {
     if (!picking || editing) return;
@@ -56,17 +39,28 @@ export default function VideoPanel({ state, flow, flash, online, command, click,
 
   return (
     <>
-      {bannerText && (
-        <div className="setup-banner">
-          <CornerMap mode={mode} />
-          <p>{bannerText}</p>
-        </div>
-      )}
       <div
         ref={frameRef}
         className={`video-frame${picking ? " clicking" : ""}${editing ? " editing" : ""}${flash ? " found" : ""}`}
       >
         <img ref={imgRef} id="video" src={src} alt="Live camera view of the wall" onClick={onImageClick} />
+        {(!loaded || !online) && (
+          <div className="video-wait">
+            <Spinner type="line-scale" label="Connecting to the camera" />
+            <span>{online ? "Connecting to the camera…" : "Reconnecting…"}</span>
+          </div>
+        )}
+        {hint && loaded && online && (
+          <div className={`video-hint ${hint.tone}`} key={hint.text} role="status">
+            {hint.tone === "busy" ? (
+              <Spinner type="line-scale-pulse-out" tone="laser" size="xs" />
+            ) : (
+              <span className="hint-dot" aria-hidden="true" />
+            )}
+            <span>{hint.text}</span>
+            {hint.keys && <kbd>{hint.keys}</kbd>}
+          </div>
+        )}
         {editing && (
           <BoxEditor
             imgRef={imgRef}
@@ -98,21 +92,54 @@ export default function VideoPanel({ state, flow, flash, online, command, click,
   );
 }
 
-// Little diagram in the banner showing what the current step is about.
-function CornerMap({ mode }) {
-  const dark = "#26282b";
-  return (
-    <svg className="corner-map" viewBox="0 0 64 40" aria-hidden="true">
-      <rect x="6" y="6" width="52" height="28" fill="none" stroke={dark} strokeWidth="1.5" strokeDasharray="3 2" />
-      {mode === "size" && (
-        <path d="M10 20 H54 M10 17 V23 M54 17 V23" stroke={dark} strokeWidth="1.5" fill="none" />
-      )}
-      {mode === "corners" &&
-        [[6, 6], [58, 6], [58, 34], [6, 34]].map(([x, y]) => (
-          <circle key={`${x},${y}`} cx={x} cy={y} r="3.5" fill={dark} stroke={dark} strokeWidth="1.5" />
-        ))}
-      {mode === "object" && <rect x="26" y="15" width="12" height="10" rx="2" fill={dark} />}
-      {mode === "laser" && <line className="banner-beam" x1="32" x2="32" y1="6" y2="34" stroke="#e3261f" strokeWidth="2.5" />}
-    </svg>
-  );
+// The one short instruction shown over the video, or null. Tones: "action"
+// (something to do), "busy" (wait, with a loader), "warn" (something's off).
+function useVideoHint({ state, flow, editing, box, picking }) {
+  const lost = useLasting(flow.stage === "scan" && state.tracker.x == null, 800);
+  if (flow.stage === "calibrate") {
+    if (!flow.sizeDone) return { tone: "action", text: "Enter the scan area size on the right" };
+    if (editing)
+      return box
+        ? { tone: "action", text: "Drag each corner onto its tape cross", keys: "Enter to confirm" }
+        : { tone: "action", text: "Drag across the video to draw the box" };
+    if (state.laser.calibrating) return { tone: "busy", text: "Calibrating the laser… keep the wall clear" };
+    if (flow.laserCanStart) return { tone: "action", text: "Ready to calibrate the laser", keys: "Space" };
+    return null;
+  }
+  if (picking) return { tone: "action", text: "Click the colored tag on the stud finder" };
+  if (flow.stage === "scan") {
+    if (state.laser.aiming) return { tone: "busy", text: "Pointing the laser at the stud…" };
+    if (lost) return { tone: "warn", text: "Can't see the stud finder: keep it inside the box" };
+  }
+  return null;
+}
+
+// True once `value` has stayed true for `ms` (so a one-frame blip doesn't show).
+function useLasting(value, ms) {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    if (!value) {
+      setOn(false);
+      return;
+    }
+    const t = setTimeout(() => setOn(true), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return on;
+}
+
+// True once the camera stream has drawn a frame (reset when the URL changes).
+function useFirstFrame(imgRef, src) {
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    setLoaded(false);
+    const t = setInterval(() => {
+      if (imgRef.current?.naturalWidth > 0) {
+        setLoaded(true);
+        clearInterval(t);
+      }
+    }, 150);
+    return () => clearInterval(t);
+  }, [imgRef, src]);
+  return loaded;
 }

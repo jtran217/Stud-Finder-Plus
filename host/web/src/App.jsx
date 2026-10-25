@@ -11,6 +11,7 @@ import CalibrateStep from "./components/CalibrateStep.jsx";
 import FinderStep from "./components/FinderStep.jsx";
 import ScanStep from "./components/ScanStep.jsx";
 import Advanced from "./components/Advanced.jsx";
+import Spinner from "./components/Spinner.jsx";
 
 // Keys that work on every step. Space, Enter, Esc, C, K and T depend on the
 // step (below).
@@ -222,7 +223,9 @@ export default function App() {
               />
             </>
           ) : (
-            <p className="card sub">Connecting…</p>
+            <p className="card sub connecting">
+              <Spinner type="ball-pulse" tone="dark" size="xs" /> Connecting to Stud Mapper…
+            </p>
           )}
         </aside>
       </main>
