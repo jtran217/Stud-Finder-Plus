@@ -16,7 +16,6 @@ import Advanced from "./components/Advanced.jsx";
 // step (below).
 const HOTKEYS = {
   r: "reset_studs",
-  m: "view",
   n: "next_stud",
   l: "laser_toggle",
 };
@@ -26,32 +25,17 @@ export default function App() {
   const { state, online, command, click } = useServerState();
   const [unit, setUnit] = useUnit();
 
-  // Things only the page knows about the flow.
-  const [laserSkipped, setLaserSkipped] = useState(false);
+  // The step on screen comes from the server (shared by every tab). The page
+  // only keeps whether the size form is open.
   const [editSize, setEditSize] = useState(false);
-  const [seenFinder, setSeenFinder] = useState(false);
-  const [view, setView] = useState("calibrate"); // the step on screen
-  useEffect(() => {
-    if (state?.tracker.x != null && !seenFinder) setSeenFinder(true);
-  }, [state, seenFinder]);
-
-  const flow = state ? getFlow(state, { laserSkipped, editSize, seenFinder, view }) : null;
+  const flow = state ? getFlow(state, { editSize }) : null;
   const flash = useFoundFlash(state);
 
-  // Something in an earlier step changed (box, laser, color): stay on that
-  // step until the user moves on again.
-  useEffect(() => {
-    if (flow && flow.stage !== view) setView(flow.stage);
-  }, [flow?.stage, view]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Stud detection only runs on the scan step.
-  const wantScanning = flow?.stage === "scan";
-  useEffect(() => {
-    if (state && state.scanning !== wantScanning) command("set_scanning", wantScanning);
-  }, [wantScanning, state?.scanning]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const go = (id) => setView(id);
-  const goBack = () => flow && flow.stageIndex > 0 && setView(STAGES[flow.stageIndex - 1].id);
+  const go = (id) => {
+    setEditSize(false);
+    command("go", id);
+  };
+  const goBack = () => flow && flow.stageIndex > 0 && go(STAGES[flow.stageIndex - 1].id);
 
   // Corner box being edited. Lives here because the video (dragging) and the
   // step card (save/cancel) both use it.
@@ -69,20 +53,19 @@ export default function App() {
   }, [editing, state]);
 
   const saveCorners = () => box && command("set_corners", { corners: orderCorners(box) });
-  const runLaser = () => {
-    setLaserSkipped(false);
-    setView("calibrate");
-    command("laser_calibrate");
-  };
+  const runLaser = () => command("laser_calibrate");
   const adjustBox = () => {
     setEditSize(false);
-    setView("calibrate");
     command("recalibrate");
   };
-  const repick = () => {
-    setView("finder");
-    command("resample_object");
+  // Back to step 1 with nothing kept from this session.
+  const hardRestart = () => {
+    command("restart_setup");
+    setEditSize(false);
+    setBox(null);
+    setSelected(null);
   };
+  const repick = () => command("resample_object");
 
   // Keyboard shortcuts. Refs keep the handler current without re-binding.
   const latest = useRef();
@@ -167,7 +150,7 @@ export default function App() {
 
   return (
     <>
-      <TopBar state={state} />
+      <TopBar state={state} onRestart={hardRestart} />
       {!online && (
         <div className="offline">
           Lost contact with the Stud Mapper program. Check that <code>web.py</code> is still running; this page
@@ -209,7 +192,7 @@ export default function App() {
                     unit={unit}
                     setUnit={setUnit}
                     setEditSize={setEditSize}
-                    onSkipLaser={() => setLaserSkipped(true)}
+                    onSkipLaser={() => command("skip_laser")}
                     onRunLaser={runLaser}
                     onNext={() => go("finder")}
                   />
@@ -230,8 +213,8 @@ export default function App() {
                 command={command}
                 flow={flow}
                 onChangeSize={() => {
+                  command("go", "calibrate");
                   setEditSize(true);
-                  setView("calibrate");
                 }}
                 onAdjustBox={adjustBox}
                 onRedoLaser={runLaser}

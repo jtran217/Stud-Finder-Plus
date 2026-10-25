@@ -7,6 +7,7 @@ __pycache__/
 host/calib.json
 host/laser_calib.json
 host/ports.json
+host/logs/
 *.mov
 *.mp4
 

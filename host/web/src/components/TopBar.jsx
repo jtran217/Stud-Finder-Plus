@@ -1,6 +1,7 @@
 import { fmt } from "../geometry.js";
+import RestartButton from "./RestartButton.jsx";
 
-export default function TopBar({ state }) {
+export default function TopBar({ state, onRestart }) {
   let camera = ["", "Camera"];
   let signal = ["", "Stud signal"];
   let laser = ["", "Laser"];
@@ -26,6 +27,7 @@ export default function TopBar({ state }) {
   return (
     <header className="topbar">
       <h1 className="brand">Stud Mapper</h1>
+      <div className="topbar-right">
       <ul className="status" aria-label="Connections">
         {[camera, signal, laser].map(([cls, text]) => (
           <li key={text.split(":")[0]} className={cls}>
@@ -33,6 +35,8 @@ export default function TopBar({ state }) {
           </li>
         ))}
       </ul>
+      <RestartButton onRestart={onRestart} disabled={!state} />
+      </div>
     </header>
   );
 }

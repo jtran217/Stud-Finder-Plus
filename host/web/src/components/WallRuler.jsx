@@ -41,9 +41,14 @@ export default function WallRuler({ state, flash }) {
         );
       })}
 
-      {inside(state.open_x) && (
-        <line className="ruler-edge" x1={sx(state.open_x)} x2={sx(state.open_x)} y1={TOP - 2} y2={BOT + 2} />
-      )}
+      {state.open_edges.filter((e) => inside(e.x)).map((e, i) => (
+        <g key={i} className="ruler-edge">
+          <line x1={sx(e.x)} x2={sx(e.x)} y1={TOP - 2} y2={BOT + 2} />
+          {e.dir !== 0 && (
+            <path d={`M${sx(e.x)} ${(TOP + BOT) / 2} l${-e.dir * 6} -4 v8 z`} />
+          )}
+        </g>
+      ))}
       {inside(laser) && <line className="ruler-laser" x1={sx(laser)} x2={sx(laser)} y1={TOP} y2={BOT} />}
       {inside(finder) && (
         <g className="ruler-finder" transform={`translate(${sx(finder)} 0)`}>

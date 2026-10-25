@@ -139,6 +139,7 @@ class SerialLink:
         self.baud = baud
         self.ser = None
         self.port = None
+        self.tap = None   # tap(direction, line) for the diagnostics log
         self._open()   # first open raises, so a bad setup fails at startup
         self.events = queue.Queue()
         self._stop = threading.Event()
@@ -172,6 +173,8 @@ class SerialLink:
                 t = time.time()
                 line = raw.decode(errors="replace").strip()
                 if line:
+                    if self.tap:
+                        self.tap("rx", line)
                     self.events.put((t, line))
 
     def _reconnect(self):
@@ -193,10 +196,13 @@ class SerialLink:
             return
 
     def send(self, cmd):
+        if self.tap:
+            self.tap("tx", cmd)
         try:
             self.ser.write((cmd.strip() + "\n").encode())
-        except Exception:
-            pass   # disconnected; the read loop is reconnecting
+        except Exception as e:
+            if self.tap:
+                self.tap("tx-fail", f"{cmd} ({e})")   # disconnected; reconnecting
 
     def close(self):
         self._stop.set()
@@ -211,13 +217,18 @@ class FakeLink:
     def __init__(self):
         self.events = queue.Queue()
         self.on = False
+        self.tap = None
 
     def toggle(self):
         self.on = not self.on
-        self.events.put((time.time(), "S1" if self.on else "S0"))
+        line = "S1" if self.on else "S0"
+        if self.tap:
+            self.tap("rx", line)
+        self.events.put((time.time(), line))
 
     def send(self, cmd):
-        print(f"[fake] would send: {cmd}")
+        if self.tap:
+            self.tap("tx", cmd)
 
     def close(self):
         pass

@@ -141,7 +141,6 @@ kbd {
 .box-editor .body { cursor: move; }
 .box-editor .handle { cursor: grab; }
 .box-editor text { font-family: var(--font); }
-.video-frame.editing .views { display: none; }
 .loupe {
   position: absolute; width: 150px; height: 150px; border-radius: 50%;
   border: 3px solid var(--graphite); box-shadow: 0 0 0 3px var(--tape);
@@ -150,16 +149,6 @@ kbd {
 .setup-banner p { margin: 0; }
 .corner-map { width: 3.2rem; flex: none; }
 
-.views {
-  position: absolute; right: 1rem; bottom: 1rem;
-  display: flex; line-height: 1.2;
-  background: rgba(38, 40, 43, 0.85);
-  border-radius: 6px; padding: 3px;
-}
-.views button {
-  border: 0; background: transparent; color: #d7d8d4; padding: 0.35rem 0.65rem; border-radius: 4px;
-}
-.views button[aria-pressed="true"] { background: var(--sheet); color: var(--graphite); }
 
 /* side panel */
 .panel { background: var(--sheet); border: 1.5px solid var(--graphite); border-radius: 10px; }
@@ -409,3 +398,17 @@ button.link:hover { background: none; color: var(--graphite); }
 @keyframes indet { from { left: 0; } to { left: 70%; } }
 .sweep-label { margin: 0.4rem 0 0; font-size: var(--fs-0); color: var(--pencil); }
 .sweep-label strong { color: var(--graphite); }
+
+/* restart */
+.topbar-right { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; }
+button.restart { background: transparent; }
+button.restart.armed { background: var(--laser); border-color: var(--laser); color: #fff; animation: pulse-blue 0.8s ease-in-out infinite; }
+
+/* diagnostics */
+.last-edge { margin: 0.2rem 0 0.4rem; font-size: 0.8rem; color: var(--pencil); }
+.last-edge.bad { color: var(--laser); font-weight: 600; }
+.ruler-edge path { fill: var(--chalk); }
+.diag { margin: 0.8rem 0 0; font-size: 0.78rem; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.7rem; }
+.diag dt { font-weight: 700; color: var(--graphite); }
+.diag dd { margin: 0; color: var(--pencil); font-variant-numeric: tabular-nums; }
+.diag .path { word-break: break-all; font-family: ui-monospace, monospace; font-size: 0.72rem; }

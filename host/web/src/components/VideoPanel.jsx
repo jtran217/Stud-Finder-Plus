@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import BoxEditor from "./BoxEditor.jsx";
 
 const STILL = new URLSearchParams(location.search).has("still");
-const VIEW_LABELS = { video: "Video", "object mask": "Object mask", "laser mask": "Laser mask" };
 
 function useStreamUrl(online) {
   // New URL after a reconnect, so the browser reopens the MJPEG stream.
@@ -94,13 +93,6 @@ export default function VideoPanel({ state, flow, flash, online, command, click,
             </span>
           </div>
         )}
-        <div className="views" role="group" aria-label="Camera view">
-          {state.views.map((v) => (
-            <button key={v} aria-pressed={v === state.view} onClick={() => command("view", v)}>
-              {VIEW_LABELS[v] || v}
-            </button>
-          ))}
-        </div>
       </div>
     </>
   );

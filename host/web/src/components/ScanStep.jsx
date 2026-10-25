@@ -15,8 +15,10 @@ export default function ScanStep({ state, command, flash, onBack }) {
     title = "Bring the stud finder into view";
     detail = `The camera can't see the ${tracker.name}. Keep it inside the box.`;
   } else if (state.open_x != null) {
+    const last = state.open_edges[state.open_edges.length - 1];
+    const from = last.dir > 0 ? "right" : last.dir < 0 ? "left" : "other";
     title = "Now come from the other side";
-    detail = `Edge marked at ${fmt(state.open_x)} in. Slide in from the opposite side until it lights up again.`;
+    detail = `Edge marked at ${fmt(state.open_x)} in. Slide in from the ${from} side until it lights up again.`;
   } else {
     title = studs.length ? "Keep sweeping" : "Sweep the wall";
     detail = fake
@@ -35,7 +37,11 @@ export default function ScanStep({ state, command, flash, onBack }) {
           {fmt(x, 2)}
           <span className="unit">in from the left</span>
         </p>
-        {state.open_x != null && <span className="pill edge">1 edge, waiting for its pair</span>}
+        {state.open_edges.length > 0 && (
+          <span className="pill edge">
+            {state.open_edges.length} edge{state.open_edges.length > 1 ? "s" : ""} waiting for a pair
+          </span>
+        )}
         {fake && (
           <button className={`signal${state.signal.on ? " is-on" : ""}`} onClick={() => command("stud_signal")}>
             {state.signal.on ? "Signal on" : "Stud signal"} <kbd>Space</kbd>
@@ -44,6 +50,12 @@ export default function ScanStep({ state, command, flash, onBack }) {
       </div>
 
       <WallRuler state={state} flash={flash} />
+
+      {state.diag.last_stud_event && state.diag.last_stud_event.ago < 15 && (
+        <p className={`last-edge${/ignored/.test(state.diag.last_stud_event.text) ? " bad" : ""}`}>
+          Last edge: {state.diag.last_stud_event.text}
+        </p>
+      )}
 
       {laser.available !== false && (laser.aim_status || canAim) && (
         <p className="aim">
@@ -85,7 +97,7 @@ export default function ScanStep({ state, command, flash, onBack }) {
           {laser.on ? "Laser off" : "Laser on"} <kbd>L</kbd>
         </button>
         <button disabled={!studs.length} onClick={() => command("reset_studs")}>
-          Start over <kbd>R</kbd>
+          Clear studs <kbd>R</kbd>
         </button>
       </div>
       <div className="row nav">

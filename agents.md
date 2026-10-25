@@ -133,10 +133,31 @@ Laptop → motor board:
   keyboard-driven `FakeLink`.
 - `markers/` marker PNGs; `python markers/gen_markers.py --show` regenerates
   them.
-- How a stud is placed: on `S1`/`S0`, `app.py` looks up where the tracked
-  object was at that laptop timestamp (interpolated, refusing gaps > 0.3 s),
-  pairs the edges, and uses their average as the stud center. Studs within
-  `MERGE_IN` are merged.
+- How a stud is placed: each `S1` is a stud edge (`S0` only means lifted or
+  switched off). `app.py` looks up where the tracked object was at that
+  laptop timestamp (interpolated, refusing gaps > 0.3 s) and which way it
+  was moving. An edge found moving right (stud's left side) pairs with one
+  found moving left (right side), within `MAX_STUD_IN`; the center is their
+  average, which cancels camera delay. Recent unpaired edges are kept, so a
+  stray edge doesn't wipe a half-found stud. Studs within `MERGE_IN` merge.
+- Stud edges only count on the Scan step. The server owns the current step
+  (`go` command), so every open tab shows the same one.
+
+## Debugging a failed run
+Every run writes `host/logs/<date-time>/events.log` (gitignored) plus
+`snaps/` (camera frames saved when something fails). The path is printed at
+startup and shown under Settings and log → Session log. Categories:
+`[serial]` every line in/out of both boards, `[stud]` each edge and what was
+decided, `[tracker]` lost/found with the reason, `[laser]` line seen/lost
+with contrast numbers, `[motor]` auto-aims, `[flow]`/`[cmd]` steps and page
+actions, `[beat]` a status line every second, `[snap]` saved frames.
+
+| Symptom | Look for |
+|---|---|
+| Studs not detected | `[serial] stud rx: S1` missing → board/wiring. `ignored: not on the scan step` → wrong step. `finder not tracked` → see `[tracker]`. `edge kept, too far…` → pairing; check `x=`/`dir=` |
+| Stud finder not tracked | `[tracker] lost why=…` and `finder_seen_pct` in `[beat]`; the snap shows what the camera saw |
+| Laser not detected | `[laser] line not seen` with `contrast`/`snr`/`cover`; the laser mask is still in the OpenCV window (`main.py`, press m) |
+| Laser not moving | `[serial] laser tx: G …` with no `rx: OK G` → board; `warning: laser station didn't answer`; `[motor] no auto-aim` → not calibrated |
 
 Common commands:
 ```bash
