@@ -1,7 +1,7 @@
-"""Laser line: find it on the wall, map motor steps to inches, aim at studs.
+"""Laser: detect the line, map motor steps <-> inches, aim at studs.
 
-The camera closes the loop since the stepper only knows step counts. FakeRig
-stands in for the motor + laser when testing without hardware.
+Stepper only knows step counts so the camera closes the loop. FakeRig is a
+fake motor + laser for testing without hardware.
 """
 import json
 import math
@@ -13,28 +13,27 @@ import numpy as np
 
 LASER_CALIB_PATH = Path(__file__).parent / "laser_calib.json"
 
-log = print   # app.py swaps this for its own logger
+log = print   # app.py replaces this
 
 
 class LaserDetector:
-    """Finds the vertical red line on a straight-on warp of the wall.
+    """Finds the vertical laser line on a top-down warp of the wall.
 
-    Works by contrast, not fixed color cutoffs, so a faint line in daylight
-    still shows: each pixel gets a redness score (red minus the stronger of
-    green/blue), each row has its own median subtracted (evens out lighting),
-    then the columns are averaged. The line is the column that stands out
-    from the wall on either side of it."""
+    Uses contrast instead of fixed HSV thresholds since the line is really
+    faint in daylight: redness = R - max(G, B), minus each row's median,
+    averaged per column. The line is the column that sticks out from its
+    neighbours."""
 
     PX_PER_IN = 20
-    MARGIN_IN = 2.0       # look a bit past the corner crosses
-    BASELINE_IN = 4.0     # wall color is judged over this width around each column
-    MIN_CONTRAST = 2.5    # peak must be this much redder than its surroundings (0-255 scale)
-    MIN_SNR = 6.0         # ...and this many times the column-to-column noise
-    MIN_FRAC = 0.3        # line has to cover this much of the wall height
+    MARGIN_IN = 2.0       # look a bit past the crosses
+    BASELINE_IN = 4.0     # window for the local background
+    MIN_CONTRAST = 2.5
+    MIN_SNR = 6.0
+    MIN_FRAC = 0.3        # must cover this much of the wall height
 
     def __init__(self):
         self.mask = None
-        self.stats = {}   # numbers behind the last decision, for the log
+        self.stats = {}   # for the diag log
         self.why = ""
 
     def find(self, frame, calib):
@@ -54,7 +53,6 @@ class LaserDetector:
         b, g, r = cv2.split(wall)
         red = r - np.maximum(g, b)
         red -= np.median(red, axis=1, keepdims=True)
-        # "Laser mask" view: how much redder than its row each pixel is
         self.mask = np.clip(red * 12, 0, 255).astype(np.uint8)
 
         prof = red.mean(axis=0)
@@ -72,16 +70,16 @@ class LaserDetector:
         if lift[peak] < max(self.MIN_CONTRAST, self.MIN_SNR * noise):
             self.why = "no column stands out enough"
             return None
-        # the line should run down most of the wall, not be one red blob
+        # should be a line down the wall, not just a red blob
         a, b2 = max(peak - p // 4, 0), min(peak + p // 4 + 1, w)
-        band = red[:, a:b2].mean(axis=1) - base[a:b2].mean()   # same averaging on both sides
+        band = red[:, a:b2].mean(axis=1) - base[a:b2].mean()
         cover = float((band > 0.4 * lift[a:b2].mean()).mean())
         self.stats["cover"] = cover
         if cover < self.MIN_FRAC:
             self.why = "red patch, but not a line down the wall"
             return None
         self.why = ""
-        # weighted center over +-0.75 in around the peak for sub-pixel x
+        # sub-pixel center: weighted over +-0.75 in
         a, b2 = max(peak - 3 * p // 4, 0), min(peak + 3 * p // 4 + 1, w)
         wts = np.clip(lift[a:b2], 0, None)
         cx = float((np.arange(a, b2) * wts).sum() / wts.sum())
@@ -89,10 +87,9 @@ class LaserDetector:
 
 
 class Stepper:
-    """Sends G commands and remembers where we told the motor to go, so we
-    can guess how long a move takes."""
+    """Sends G commands, remembers the last target (to estimate travel time)."""
 
-    STEPS_PER_S = 700   # matches STEP_US in the firmware
+    STEPS_PER_S = 700   # STEP_US in the firmware
 
     def __init__(self, send):
         self.send = send
@@ -107,12 +104,12 @@ class Stepper:
 
 
 class Settler:
-    """Waits for the laser reading to stop moving after a move."""
+    """Waits for the laser reading to settle after a move."""
 
     MIN_WAIT_S = 0.3
     WINDOW_S = 0.3
     TOL_IN = 0.1
-    MISS_S = 0.8        # nothing seen this long after arriving -> off the wall
+    MISS_S = 0.8        # not seen for this long -> it's off the wall
     TIMEOUT_S = 4.0
 
     def __init__(self, now, travel_s=0.0):
@@ -122,7 +119,7 @@ class Settler:
         self.seen = False
 
     def update(self, now, x):
-        """Returns (done, x). x is None if we never saw the laser."""
+        """(done, x). x is None if the laser never showed up."""
         elapsed = now - self.t0
         if elapsed < self.wait:
             return False, None
@@ -143,17 +140,18 @@ class Settler:
 
 
 class LaserCalibration:
-    """Builds the steps <-> inches table in two passes:
-      1. explore: step out from 0 both ways until the line leaves the wall,
-         then bisect to pin down each edge
-      2. measure: sweep left to right across that range, recording points
-    Measuring in one direction keeps gear backlash out of the table."""
+    """Builds the steps <-> inches table.
+
+    1. explore: step out from 0 each way until the line leaves the wall,
+       bisect to find the edge
+    2. measure: sweep left -> right across that range
+    Always measuring in one direction keeps backlash out of the table."""
 
     EXPLORE_STEP = 100
     REFINE_ROUNDS = 3   # 100 -> 50 -> 25 -> 12 steps
     POINT_SPACING = 40
     MIN_POINTS, MAX_POINTS = 8, 25
-    PRELOAD = 40        # start the sweep a bit left of the first point
+    PRELOAD = 40
 
     def __init__(self, stepper, max_steps=900):
         self.stepper = stepper
@@ -243,7 +241,7 @@ class LaserCalibration:
             edge = self.edge[self.dir]
             if edge is None:
                 self._next_side(now)
-            else:   # the edge is somewhere in the 100 steps past the last hit
+            else:   # edge is somewhere in the next 100 steps
                 missed = edge + self.dir * self.EXPLORE_STEP
                 self.refine = (edge, missed, self.REFINE_ROUNDS)
                 self._go((edge + missed) // 2, now)
@@ -314,9 +312,8 @@ class LaserCalibration:
 
 
 class Aimer:
-    """Moves to the stud using the table, then nudges based on where the
-    camera actually sees the line. Every move ends going left to right
-    (like the calibration sweep) so gear backlash doesn't add error."""
+    """Moves to a stud using the table, then corrects from what the camera
+    sees. Always finishes moving left -> right like the calibration did."""
 
     TOL_IN = 0.15
     MAX_CORRECTIONS = 3
@@ -360,7 +357,7 @@ class Aimer:
         if not done:
             return
         self.settler = None
-        if self.preloading:              # now come back from the left
+        if self.preloading:   # come back from the left
             self.preloading = False
             self.settler = Settler(now, self.stepper.move(self.steps))
             return
@@ -384,9 +381,8 @@ class Aimer:
 
 
 class FakeRig:
-    """Simulated stepper + laser. Draws a red line onto the frame so the
-    detector, calibration and aiming can run without hardware. ERR_DEG adds
-    some position-dependent error so the corrections have work to do."""
+    """Fake stepper + laser that draws a red line on the frame. ERR_DEG adds
+    some error so the aim corrections actually get exercised."""
 
     DEG_PER_STEP = 360 / 4096   # 28BYJ-48, half-stepping
     DIST_IN = 30.0
@@ -394,7 +390,7 @@ class FakeRig:
     STEPS_PER_S = Stepper.STEPS_PER_S
 
     def __init__(self, aim_in):
-        self.aim_in = aim_in    # where step 0 points
+        self.aim_in = aim_in    # where step 0 lands
         self.target = 0
         self.pos = 0.0
         self.on = False

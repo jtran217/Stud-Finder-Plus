@@ -1,5 +1,3 @@
-// Top-down strip of the scan area: studs as lumber, where the stud finder is,
-// the edge waiting for its pair, and where the laser line is.
 const VW = 320;
 const PAD = 12;
 const TOP = 16;

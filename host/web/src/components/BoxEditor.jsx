@@ -8,17 +8,14 @@ const LOUPE_SPAN = 36;   // camera pixels on each side of the point (~4x zoom)
 const YELLOW = "#f2c524";
 const DARK = "#26282b";
 
-// Drag on the video to draw a box, then drag each corner onto its tape cross.
-// Dragging inside the box moves all of it. A magnifier follows a dragged corner.
+// draw a box, drag corners onto the tape crosses (with a magnifier), drag inside to move it
 export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, setSelected, wallSize, cornersIn, unit }) {
   const drag = useRef(null);
   const loupeRef = useRef(null);
   const [rect, setRect] = useState(null);
 
-  // Re-measure on mount and whenever the window resizes.
   useLayoutEffect(() => {
-    // On the first render the parent frame's ref isn't attached yet (React
-    // attaches parent refs after child layout effects), so wait a frame.
+    // parent ref isn't attached yet on first layout effect, so also try next frame
     const measure = () =>
       imgRef.current && frameRef.current && setRect(pictureRect(imgRef.current, frameRef.current));
     measure();
@@ -74,7 +71,7 @@ export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, set
     ctx.lineTo(c + 15, c);
     ctx.stroke();
 
-    // Sit up and to the right of the pointer, flipping near the edges.
+    // up-right of the pointer, flip near edges
     const [x, y] = toFramePx(p, r);
     let left = x + 24;
     let top = y - LOUPE - 24;
@@ -144,7 +141,7 @@ export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, set
     hideLoupe();
 
     if (d.type === "corner" && box) {
-      // Keep the array in TL, TR, BR, BL order even if a corner was dragged past another.
+      // keep TL TR BR BL order if a corner got dragged past another
       const ordered = orderCorners(box);
       setSelected(ordered.indexOf(box[d.i]));
       setBox(ordered);

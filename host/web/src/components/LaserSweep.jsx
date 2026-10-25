@@ -1,5 +1,4 @@
-// Live view of the laser calibration: the wall as a strip, the red line where
-// the camera sees the laser right now, and a dot for each measured point.
+// calibration progress: live laser position + a dot per measured point
 const VW = 320;
 const PAD = 10;
 

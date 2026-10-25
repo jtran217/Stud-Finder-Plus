@@ -1,15 +1,10 @@
-"""Session log for digging into failures after a run.
+"""Per-run debug log: host/logs/<date-time>/events.log + snaps/.
 
-Each run of the app writes to host/logs/<date-time>/:
-  events.log   one line per event, e.g.
-               19:52:03.418 [stud] S1 x=12.31 v=+3.2 dir=right -> paired ...
-  snaps/       a camera frame (with the overlays) whenever something fails:
-               a stud edge ignored, an edge pair rejected, calibration failed,
-               the tracker lost for a while...
+    19:52:03.418 [stud] S1 0 -> paired with edge @ 11.25 in ...  x=12.31 dir=-1
 
-Categories: serial (every line in/out of both boards), stud, tracker, laser,
-motor, calib, flow (steps), cmd (page actions), beat (1 s heartbeat), warn.
-host/logs is gitignored.
+Categories: serial, stud, tracker, laser, motor, flow, cmd, app, beat (1/s),
+snap. Snapshots get saved when something goes wrong (edge ignored, tracker
+lost, calibration failed...).
 """
 import threading
 import time
@@ -30,14 +25,14 @@ def _fmt(v):
 
 class Diag:
     MAX_SNAPS = 300
-    SNAP_GAP_S = 0.5    # at most 2 snapshots a second
+    SNAP_GAP_S = 0.5
 
     def __init__(self, enabled=True):
         self.enabled = enabled
         self.lock = threading.Lock()
         self.snaps = 0
         self._last_snap = 0.0
-        self.pending = []   # snapshot reasons, written after the frame is drawn
+        self.pending = []   # saved once the frame has its overlays drawn
         if not enabled:
             self.dir = None
             return
@@ -58,10 +53,9 @@ class Diag:
             with self.lock:
                 self.f.write(line + "\n")
         except (OSError, ValueError):
-            pass   # logging must never stop the app (disk full, closed on exit)
+            pass   # never let logging take the app down
 
     def snap(self, why):
-        """Ask for a snapshot of the current frame (saved once it's drawn)."""
         if self.enabled:
             self.pending.append(why)
 

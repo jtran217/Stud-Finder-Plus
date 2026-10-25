@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
-// Wipes this session and goes back to step 1. Asks for a second click so a
-// stray click can't throw away a scan.
+// needs a second click so you can't wipe a scan by accident
 export default function RestartButton({ onRestart, disabled }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {

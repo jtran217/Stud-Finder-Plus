@@ -202,7 +202,7 @@ kbd {
   color: var(--graphite);
 }
 
-/* ---- guided flow ---------------------------------------------------- */
+/* steps */
 .panel { overflow: hidden; }
 
 .stepper {
@@ -400,8 +400,7 @@ button.restart.armed { background: var(--laser); border-color: var(--laser); col
 .diag dd { margin: 0; color: var(--pencil); font-variant-numeric: tabular-nums; }
 .diag .path { word-break: break-all; font-family: ui-monospace, monospace; font-size: 0.72rem; }
 
-/* instruction pill over the video: floats, never moves the layout, and lets
-   clicks/drags through to the box editor underneath */
+/* hint pill over the video (pointer-events off so box dragging still works) */
 .video-hint {
   position: absolute; top: 0.75rem; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 0.55rem; max-width: calc(100% - 2rem);
@@ -418,7 +417,7 @@ button.restart.armed { background: var(--laser); border-color: var(--laser); col
 .video-hint .hint-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex: none; background: var(--tape); animation: pulse 1.6s ease-in-out infinite; }
 .video-hint.warn .hint-dot { background: var(--laser); animation: none; }
 .video-hint.warn { box-shadow: 0 0 0 1.5px var(--laser), 0 4px 14px rgba(0, 0, 0, 0.25); }
-.video-frame.editing:hover .video-hint { opacity: 0.35; }   /* out of the way while dragging */
+.video-frame.editing:hover .video-hint { opacity: 0.35; }
 .found-toast ~ .video-hint, .video-frame.found .video-hint { opacity: 0; }
 @keyframes hint-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translateX(-50%); } }
 
@@ -428,7 +427,7 @@ button.restart.armed { background: var(--laser); border-color: var(--laser); col
   color: #d7d8d4; font-size: 0.9rem; font-weight: 600; background: var(--graphite);
 }
 
-/* react-loaders: sizes and colors */
+/* react-loaders */
 .spinner { display: inline-flex; align-items: center; justify-content: center; flex: none; line-height: 0; }
 .spinner .loader { display: inline-flex; }
 .spinner-xs { width: 1.6rem; height: 1rem; }

@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 const SHOW_MS = 2800;
 
-// Returns the stud that was just found (for a few seconds), or null.
-// The server bumps found.seq each time a stud is added or refined.
+// the stud that was just found (for a few seconds), or null. server bumps found.seq per stud
 export function useFoundFlash(state) {
   const [flash, setFlash] = useState(null);
   const lastSeq = useRef(null);

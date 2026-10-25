@@ -2,8 +2,6 @@ import { fmt } from "../geometry.js";
 import WallRuler from "./WallRuler.jsx";
 import Spinner from "./Spinner.jsx";
 
-// Step 3: sweep the wall. Each stud found shows up on the map, and the laser
-// jumps to it on its own.
 export default function ScanStep({ state, command, flash, onBack }) {
   const { tracker, studs, laser } = state;
   const fake = state.signal.source === "fake";

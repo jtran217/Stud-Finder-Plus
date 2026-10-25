@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { UNITS, formatLength, fromInches, toInches } from "../units.js";
 
-// Width and height of the scan area (between the tape crosses).
 export default function WallSizeForm({ state, command, unit, setUnit, onDone, onCancel }) {
   const [width, setWidth] = useState(formatLength(state.wall_size[0], unit));
   const [height, setHeight] = useState(formatLength(state.wall_size[1], unit));
@@ -12,7 +11,7 @@ export default function WallSizeForm({ state, command, unit, setUnit, onDone, on
     widthRef.current?.select();
   }, []);
 
-  // Switching units converts what's typed, so 24 in becomes 2 ft.
+  // convert what's typed when the unit changes (24 in -> 2 ft)
   const changeUnit = (next) => {
     const convert = (v) => {
       const n = parseFloat(v);

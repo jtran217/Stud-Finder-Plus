@@ -1,8 +1,8 @@
-// Points are [x, y] as fractions of the camera picture (0-1).
+// points are [x, y] as fractions of the camera image (0-1)
 
 export const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-// Sort 4 points into TL, TR, BR, BL.
+// TL, TR, BR, BL
 export function orderCorners(pts) {
   const byY = pts.slice().sort((a, b) => a[1] - b[1]);
   const [tl, tr] = byY.slice(0, 2).sort((a, b) => a[0] - b[0]);
@@ -20,8 +20,7 @@ export function insidePolygon([px, py], poly) {
   return inside;
 }
 
-// Where the picture sits inside its frame, in frame pixels. The <img> uses
-// object-fit: contain, so there can be letterboxing.
+// where the image actually sits inside the frame (object-fit: contain letterboxes it)
 export function pictureRect(img, frame) {
   const fr = frame.getBoundingClientRect();
   const ir = img.getBoundingClientRect();
