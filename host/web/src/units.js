@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-// The backend works in inches; these are only for entering/showing the wall size.
+// backend is all inches, this is just for the wall size form
 export const UNITS = {
   in: { label: "in", perInch: 1 },
   ft: { label: "ft", perInch: 1 / 12 },
@@ -12,7 +12,7 @@ export const UNITS = {
 export const toInches = (value, unit) => value / UNITS[unit].perInch;
 export const fromInches = (inches, unit) => inches * UNITS[unit].perInch;
 
-// Rounded for display: 24 -> "24", 2.0000001 -> "2", 60.96 -> "60.96"
+// 24 -> "24", 2.0000001 -> "2"
 export const formatLength = (inches, unit) =>
   String(Number(fromInches(inches, unit).toFixed(unit === "m" ? 3 : 2)));
 
@@ -32,7 +32,7 @@ export function useUnit() {
     try {
       localStorage.setItem(KEY, u);
     } catch {
-      /* private mode etc. */
+      // private mode
     }
   };
   return [unit, choose];

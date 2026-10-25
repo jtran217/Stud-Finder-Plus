@@ -114,17 +114,16 @@ class TapeTracker:
 
     HUE_TOL = 10        # OpenCV hue runs 0-179
     MIN_AREA_PX = 300   # ignore specks smaller than this
-    SIZE_TOL = 1.4      # keep blobs within e^1.4 = 4x of the tape's size (blur, tilt)
-    LOCK_RADIUS_PX = 200  # first find after a click: nearest blob within this
+    SIZE_TOL = 1.4      # log ratio, ~4x either way (motion blur, tilt)
+    LOCK_RADIUS_PX = 200
 
     def __init__(self):
         self.lo = self.hi = None   # HSV bounds; hue may wrap past 179
         self.mask = None           # last threshold mask, for debugging
         self.last = None           # last tape center in pixels
         self.ref_area = None       # tape's blob area, learned on the first find
-        self.why = "no color picked"   # why the last find failed (for the log)
-        self.stats = {}            # blob counts/areas from the last find
-        self.sampled = None        # (h, s, v) of the click
+        self.why = "no color picked"   # for the diag log
+        self.stats = {}
 
     @property
     def ready(self):
@@ -140,7 +139,6 @@ class TapeTracker:
         self.lo = (h - self.HUE_TOL, max(s * 0.5, 50), max(v * 0.4, 40))
         self.hi = (h + self.HUE_TOL, 255, 255)
         self.last, self.ref_area = (x, y), None
-        self.sampled = (float(h), float(s), float(v))
         print(f"tape color sampled: HSV ({h:.0f}, {s:.0f}, {v:.0f})")
 
     def _threshold(self, hsv):
@@ -189,8 +187,7 @@ class TapeTracker:
             self.why = f"only specks of that color (< {self.MIN_AREA_PX} px)"
             return None
         if self.ref_area is None:
-            # First find after a click: the blob under the click is the tape,
-            # or failing that the nearest one (the finder may have moved a bit).
+            # first find after the click: blob under the click, else the nearest one
             under = [b for b in blobs if cv2.pointPolygonTest(b[3], self.last, False) >= 0]
             if not under:
                 near = [b for b in blobs if np.hypot(b[1][0] - self.last[0],
@@ -204,8 +201,7 @@ class TapeTracker:
             self.ref_area = best[0]
             print(f"tape locked on: {best[0]:.0f} px blob")
         else:
-            # Keep blobs roughly the tape's size, then prefer the one closest in
-            # size and position to where the tape was last seen.
+            # right size, then closest in size + position to last time
             size_err = lambda b: abs(np.log(b[0] / self.ref_area))
             sized = [b for b in blobs if size_err(b) < self.SIZE_TOL]
             if not sized:

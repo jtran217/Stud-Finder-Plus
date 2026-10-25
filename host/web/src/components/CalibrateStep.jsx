@@ -3,7 +3,6 @@ import KeyPrompt from "./KeyPrompt.jsx";
 import LaserSweep from "./LaserSweep.jsx";
 import WallSizeForm from "./WallSizeForm.jsx";
 
-// Step 1: size of the scan area, box on the tape crosses, then the laser sweep.
 export default function CalibrateStep({ state, flow, command, editing, box, onSaveCorners, unit, setUnit, setEditSize, onSkipLaser, onRunLaser, onNext }) {
   const L = state.laser;
   const sizeText = `${formatLength(state.wall_size[0], unit)} × ${formatLength(state.wall_size[1], unit)} ${unit}`;

@@ -1,6 +1,5 @@
 import ActivityLog from "./ActivityLog.jsx";
 
-// Tucked-away controls for redoing a step, plus the activity log.
 export default function Advanced({ state, command, flow, onChangeSize, onAdjustBox, onRedoLaser, onRepick }) {
   const L = state.laser;
   const object = state.tracker.mode === "object";
@@ -33,8 +32,7 @@ export default function Advanced({ state, command, flow, onChangeSize, onAdjustB
   );
 }
 
-// Live numbers for figuring out why something isn't working. The full
-// record is in the session log (host/logs/...).
+// full details are in host/logs/<run>/events.log
 function Diagnostics({ state }) {
   const d = state.diag;
   const c = d.counts;

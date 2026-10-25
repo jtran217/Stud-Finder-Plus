@@ -1,7 +1,5 @@
 import { STAGES } from "../flow.js";
 
-// Progress across the top of the panel. Any step already reached can be
-// clicked to go back (or forward again).
 export default function Stepper({ index, allowedIndex, onGo }) {
   return (
     <ol className="stepper" aria-label="Progress">

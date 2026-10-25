@@ -5,7 +5,7 @@ import Spinner from "./Spinner.jsx";
 const STILL = new URLSearchParams(location.search).has("still");
 
 function useStreamUrl(online) {
-  // New URL after a reconnect, so the browser reopens the MJPEG stream.
+  // new URL after reconnecting so the browser reopens the mjpeg stream
   const [n, setN] = useState(0);
   const wasOnline = useRef(online);
   useEffect(() => {
@@ -19,7 +19,6 @@ export default function VideoPanel({ state, flow, flash, online, command, click,
   const imgRef = useRef(null);
   const frameRef = useRef(null);
   const src = useStreamUrl(online);
-  // Clicks on the picture pick the stud finder's color, only on step 2.
   const picking = flow.stage === "finder" && state.tracker.mode === "object" && !state.tracker.ready;
 
   const hint = useVideoHint({ state, flow, editing, box, picking });
@@ -92,8 +91,7 @@ export default function VideoPanel({ state, flow, flash, online, command, click,
   );
 }
 
-// The one short instruction shown over the video, or null. Tones: "action"
-// (something to do), "busy" (wait, with a loader), "warn" (something's off).
+// tone: action | busy | warn
 function useVideoHint({ state, flow, editing, box, picking }) {
   const lost = useLasting(flow.stage === "scan" && state.tracker.x == null, 800);
   if (flow.stage === "calibrate") {
@@ -114,7 +112,7 @@ function useVideoHint({ state, flow, editing, box, picking }) {
   return null;
 }
 
-// True once `value` has stayed true for `ms` (so a one-frame blip doesn't show).
+// debounce: true once value has been true for ms
 function useLasting(value, ms) {
   const [on, setOn] = useState(false);
   useEffect(() => {
@@ -128,7 +126,6 @@ function useLasting(value, ms) {
   return on;
 }
 
-// True once the camera stream has drawn a frame (reset when the URL changes).
 function useFirstFrame(imgRef, src) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {

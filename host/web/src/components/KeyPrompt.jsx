@@ -1,4 +1,3 @@
-// Big "Press Space to ..." call to action. Clicking it does the same thing.
 export default function KeyPrompt({ keys, label, onClick, disabled }) {
   return (
     <button className="key-prompt" onClick={onClick} disabled={disabled}>

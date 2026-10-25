@@ -10,7 +10,7 @@ async function post(path, body) {
   });
 }
 
-// Polls /api/state. `refresh` fetches right away (used after a command).
+// polls /api/state; refresh() fetches right away (after a command)
 export function useServerState() {
   const [state, setState] = useState(null);
   const [online, setOnline] = useState(true);

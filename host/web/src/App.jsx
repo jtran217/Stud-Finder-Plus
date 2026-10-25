@@ -13,8 +13,7 @@ import ScanStep from "./components/ScanStep.jsx";
 import Advanced from "./components/Advanced.jsx";
 import Spinner from "./components/Spinner.jsx";
 
-// Keys that work on every step. Space, Enter, Esc, C, K and T depend on the
-// step (below).
+// Space/Enter/Esc/C/K/T are handled per step below
 const HOTKEYS = {
   r: "reset_studs",
   n: "next_stud",
@@ -26,8 +25,7 @@ export default function App() {
   const { state, online, command, click } = useServerState();
   const [unit, setUnit] = useUnit();
 
-  // The step on screen comes from the server (shared by every tab). The page
-  // only keeps whether the size form is open.
+  // step itself comes from the server
   const [editSize, setEditSize] = useState(false);
   const flow = state ? getFlow(state, { editSize }) : null;
   const flash = useFoundFlash(state);
@@ -38,8 +36,7 @@ export default function App() {
   };
   const goBack = () => flow && flow.stageIndex > 0 && go(STAGES[flow.stageIndex - 1].id);
 
-  // Corner box being edited. Lives here because the video (dragging) and the
-  // step card (save/cancel) both use it.
+  // box being edited (shared by the video and the step card)
   const [box, setBox] = useState(null);
   const [selected, setSelected] = useState(null);
   const editing = !!state && state.wall_size_set && state.clicks < 4 && !editSize && flow.stage === "calibrate";
@@ -59,7 +56,6 @@ export default function App() {
     setEditSize(false);
     command("recalibrate");
   };
-  // Back to step 1 with nothing kept from this session.
   const hardRestart = () => {
     command("restart_setup");
     setEditSize(false);
@@ -68,7 +64,7 @@ export default function App() {
   };
   const repick = () => command("resample_object");
 
-  // Keyboard shortcuts. Refs keep the handler current without re-binding.
+  // keyboard. ref so the handler sees current state without rebinding
   const latest = useRef();
   latest.current = { editing, box, selected, saveCorners, command, flow, state, runLaser, adjustBox, repick, go, goBack };
   useEffect(() => {
@@ -102,7 +98,6 @@ export default function App() {
         goBack();
         return;
       }
-      // Step 1: Space or Enter starts the laser calibration; Enter moves on once done.
       if (confirm && flow.laserCanStart) {
         e.preventDefault();
         runLaser();
@@ -118,7 +113,7 @@ export default function App() {
         go("scan");
         return;
       }
-      // Step 3: Space is the stud signal when there's no Pro Micro.
+      // no Pro Micro -> space fakes the stud signal
       if (e.key === " " && flow.stage === "scan" && state.signal.source === "fake") {
         e.preventDefault();
         command("stud_signal");

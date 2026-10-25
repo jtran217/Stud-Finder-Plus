@@ -1,6 +1,5 @@
 import KeyPrompt from "./KeyPrompt.jsx";
 
-// Step 2: show the page what the stud finder looks like.
 export default function FinderStep({ state, flow, command, onBack, onNext }) {
   const object = state.tracker.mode === "object";
   const ready = flow.finderReady;
