@@ -14,9 +14,13 @@ export default function TopBar({ state }) {
         : ["sim", "Stud signal: keyboard"];
     laser = L.simulated
       ? ["sim", "Laser: simulated"]
-      : L.calibrated
-        ? ["good", "Laser: calibrated"]
-        : ["", "Laser: not calibrated"];
+      : L.calibrating
+        ? ["sim", "Laser: calibrating"]
+        : L.calibrated_this_run
+          ? ["good", "Laser: calibrated"]
+          : L.available
+            ? ["", "Laser: not calibrated"]
+            : ["", "Laser: none"];
   }
 
   return (

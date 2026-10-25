@@ -15,23 +15,36 @@ function useStreamUrl(online) {
   return `${STILL ? "/snapshot.jpg" : "/stream.mjpg"}?${n}`;
 }
 
-export default function VideoPanel({ state, online, command, click, editing, box, setBox, selected, setSelected, unit }) {
+export default function VideoPanel({ state, flow, flash, online, command, click, editing, box, setBox, selected, setSelected, unit }) {
   const imgRef = useRef(null);
   const frameRef = useRef(null);
   const src = useStreamUrl(online);
-  const step = state.setup_step;
+  // Clicks on the picture pick the stud finder's color, only on step 2.
+  const picking = flow.stage === "finder" && state.tracker.mode === "object" && !state.tracker.ready;
 
   let bannerText = null;
-  if (!state.wall_size_set) bannerText = "Enter the distance between the tape crosses in the Setup panel";
-  else if (editing)
-    bannerText = box
-      ? "Drag each corner onto the center of its tape cross, then save corners"
-      : "Drag across the video to draw a box over the 4 tape crosses";
-  else if (step) bannerText = "Click the colored object on the stud finder";
+  let mode = "size";
+  if (flow.stage === "calibrate") {
+    if (!flow.sizeDone) bannerText = "Enter the size of the scan area in the panel on the right";
+    else if (editing) {
+      mode = "corners";
+      bannerText = box
+        ? "Check each corner sits on the center of its tape cross, then press Enter to confirm"
+        : "Drag across the video to draw a box over the 4 tape crosses";
+    } else if (state.laser.calibrating) {
+      mode = "laser";
+      bannerText = "Calibrating: watch the laser sweep across the wall. Red dots mark each measured point.";
+    } else if (flow.laserCanStart) {
+      mode = "laser";
+      bannerText = "Press Space to start calibration";
+    }
+  } else if (picking) {
+    mode = "object";
+    bannerText = "Click the colored tag on the stud finder";
+  }
 
-  // Clicks on the picture pick the stud finder's color (after the corners).
   const onImageClick = (e) => {
-    if (!step || editing) return;
+    if (!picking || editing) return;
     const img = e.currentTarget;
     const r = img.getBoundingClientRect();
     const scale = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
@@ -46,11 +59,14 @@ export default function VideoPanel({ state, online, command, click, editing, box
     <>
       {bannerText && (
         <div className="setup-banner">
-          <CornerMap mode={!state.wall_size_set ? "size" : editing ? "corners" : "object"} />
+          <CornerMap mode={mode} />
           <p>{bannerText}</p>
         </div>
       )}
-      <div ref={frameRef} className={`video-frame${step ? " clicking" : ""}${editing ? " editing" : ""}`}>
+      <div
+        ref={frameRef}
+        className={`video-frame${picking ? " clicking" : ""}${editing ? " editing" : ""}${flash ? " found" : ""}`}
+      >
         <img ref={imgRef} id="video" src={src} alt="Live camera view of the wall" onClick={onImageClick} />
         {editing && (
           <BoxEditor
@@ -64,6 +80,19 @@ export default function VideoPanel({ state, online, command, click, editing, box
             unit={unit}
             cornersIn={state.corners_in}
           />
+        )}
+        {flash && (
+          <div className="found-toast" key={flash.seq} role="status">
+            <span className="found-num">{flash.index + 1}</span>
+            <span>
+              <strong>
+                {flash.new ? "Stud found" : "Stud confirmed"} at {flash.center.toFixed(1)} in
+              </strong>
+              <small>
+                {flash.aimed ? "Laser is pointing at it" : flash.new ? "Added to the map" : `${flash.n} passes averaged`}
+              </small>
+            </span>
+          </div>
         )}
         <div className="views" role="group" aria-label="Camera view">
           {state.views.map((v) => (
@@ -91,6 +120,7 @@ function CornerMap({ mode }) {
           <circle key={`${x},${y}`} cx={x} cy={y} r="3.5" fill={dark} stroke={dark} strokeWidth="1.5" />
         ))}
       {mode === "object" && <rect x="26" y="15" width="12" height="10" rx="2" fill={dark} />}
+      {mode === "laser" && <line className="banner-beam" x1="32" x2="32" y1="6" y2="34" stroke="#e3261f" strokeWidth="2.5" />}
     </svg>
   );
 }

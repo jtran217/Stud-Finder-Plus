@@ -86,24 +86,26 @@ class StudMap:
         self.log = log
 
     def handle(self, kind, x):
+        """Returns the stud dict when an edge pair completes a stud, else None."""
         # Each S1 is a stud edge (the LED came on while sliding in from one
         # side). S0 only means the finder was lifted or switched off: ignore it.
         if kind != "S1":
-            return
+            return None
         if self.open_x is None:
             self.open_x = x
             self.log(f"edge @ {x:.2f} in, waiting for the other side")
-            return
+            return None
         width = abs(x - self.open_x)
         if MIN_STUD_IN <= width <= MAX_STUD_IN:
             left, right = sorted((self.open_x, x))
             self.open_x = None
-            self._add(left, right)
+            return self._add(left, right)
         else:
             # Same side twice, or a different stud: start over from this edge.
             self.log(f"edge @ {x:.2f} in doesn't pair with {self.open_x:.2f} in "
                      f"({width:.2f} in apart), starting over")
             self.open_x = x
+            return None
 
     def _add(self, left, right):
         center = (left + right) / 2
@@ -115,10 +117,12 @@ class StudMap:
                 s["right"] = (s["right"] * n + right) / (n + 1)
                 s["n"] = n + 1
                 self.log(f"refined stud @ {s['center']:.2f} in (n={s['n']})")
-                return
-        self.studs.append({"center": center, "left": left, "right": right, "n": 1})
+                return s
+        s = {"center": center, "left": left, "right": right, "n": 1}
+        self.studs.append(s)
         self.studs.sort(key=lambda s: s["center"])
         self.log(f"new stud @ {center:.2f} in  (width {right - left:.2f} in)")
+        return s
 
 
 def draw_studs(frame, calib, studs, highlight=None):
@@ -184,7 +188,16 @@ class StudApp:
         self.lcal = laser.LaserCalibration(self.stepper, LASER_MAX_STEPS)
         self.aimer = laser.Aimer(self.stepper, self.lcal)
         self.laser_on = False
+        # The page asks for a laser calibration on every launch, even with a
+        # saved one loaded, so the demo always starts from a fresh sweep.
+        self.lcal_this_run = False
+        # The web page walks through setup first: it confirms the saved box on
+        # every launch and only turns stud detection on at the scan step.
+        self.guided = ask_wall_size
+        self.scanning = not ask_wall_size
         self.aim_index = None
+        # Last stud found, so the page can flash it: seq goes up each time.
+        self.found = {"seq": 0, "index": None, "new": False, "aimed": False}
 
         self.history = History()
         self.studmap = StudMap(self.log)
@@ -282,9 +295,16 @@ class StudApp:
                 self.clicking = True
             elif name == "undo_click" and self.clicking and self.clicks:
                 self.clicks.pop()
+            elif name == "set_scanning":
+                on = bool(arg)
+                if on != self.scanning:
+                    self.scanning = on
+                    self.studmap.open_x = None   # a half-found stud doesn't carry over
+                    self.log("scanning: stud detection on" if on else "scanning paused")
             elif name == "reset_studs":
                 self.studmap = StudMap(self.log)
                 self.aim_index = None
+                self.found = {"seq": self.found["seq"], "index": None, "new": False, "aimed": False}
                 self.log("studs cleared")
             elif name == "stud_signal" and isinstance(self.link, FakeLink):
                 self.link.toggle()
@@ -303,6 +323,7 @@ class StudApp:
                 self.log("laser calibration: sweeping the motor ...")
                 self.aimer.status = ""
                 self.lcal.start(now)
+                self.lcal_this_run = True
                 self.laser_on = True
             elif name in ("next_stud", "aim"):
                 if self.lcal.running:
@@ -316,12 +337,27 @@ class StudApp:
                 else:
                     self.aim_index = 0 if self.aim_index is None else \
                         (self.aim_index + 1) % len(studs)
-                s = studs[self.aim_index]
-                self.aimer.aim(s["center"], now, label=f"Stud {self.aim_index + 1}")
-                self.laser_on = self.laser_on or self.aimer.running
+                self._aim(self.aim_index, now)
             elif name == "laser_toggle":
                 self.laser_on = not self.laser_on
                 self.send(f"L {int(self.laser_on)}")
+
+    def _aim(self, index, now):
+        self.aim_index = index
+        s = self.studmap.studs[index]
+        self.aimer.aim(s["center"], now, label=f"Stud {index + 1}")
+        self.laser_on = self.laser_on or self.aimer.running
+
+    def _stud_found(self, stud, now):
+        """A stud was just added or refined: tell the page, point the laser at it."""
+        index = self.studmap.studs.index(stud)
+        aimed = self.lcal.ready and not self.lcal.running
+        if aimed:
+            self._aim(index, now)
+        elif self.aim_index is not None and self.aim_index >= index and stud["n"] == 1:
+            self.aim_index += 1   # a new stud to the left shifts the numbering
+        self.found = {"seq": self.found["seq"] + 1, "index": index,
+                      "new": stud["n"] == 1, "aimed": aimed}
 
     def _laser_station_restarted(self):
         # A reset Uno calls wherever the motor is "step 0", so the old table is
@@ -342,7 +378,7 @@ class StudApp:
             if self.frame_size is None:
                 self.frame_size = (frame.shape[1], frame.shape[0])
                 if self.calib.load(self.frame_size):
-                    self.clicking = False
+                    self.clicking = self.guided   # page shows the saved box to confirm
                     self.wall_size_set = True
                     w, h = self.wall_size
                     self.log(f"loaded saved wall calibration ({w:g} x {h:g} in)")
@@ -399,12 +435,16 @@ class StudApp:
             while not self.link.events.empty():
                 t, line = self.link.events.get()
                 kind = line.split()[0]
+                if kind in ("S1", "S0") and not self.scanning:
+                    continue   # still setting up: ignore the stud finder
                 if kind in ("S1", "S0"):
                     ex = self.history.x_at(t)
                     if ex is None:
                         self.log(f"{kind} ignored: {self.finder_name} not seen at that moment")
                     else:
-                        self.studmap.handle(kind, ex)
+                        stud = self.studmap.handle(kind, ex)
+                        if stud is not None:
+                            self._stud_found(stud, now)
                 else:
                     self.log(f"arduino: {line}")
 
@@ -429,7 +469,19 @@ class StudApp:
                 y0, y1 = self.calib.y_range
                 top, bot = self.calib.in_to_px([(self.laser_x, y0),
                                                 (self.laser_x, y1)]).astype(int)
-                cv2.line(frame, tuple(top), tuple(bot), (255, 255, 0), 1)
+                cv2.line(frame, tuple(top), tuple(bot), (255, 255, 0),
+                         3 if self.lcal.running else 1)
+        if self.calib.ready and self.lcal.running:
+            # Show the sweep: every measured point so far, along the box's middle.
+            y_mid = sum(self.calib.y_range) / 2
+            for _, x in self.lcal.points:
+                p = self.calib.in_to_px([(x, y_mid)]).astype(int)[0]
+                cv2.circle(frame, tuple(p), 12, (0, 0, 255), -1)
+                cv2.circle(frame, tuple(p), 12, (255, 255, 255), 2)
+            cv2.putText(frame, self.lcal.status.replace("calibrating: ", "Calibrating: "),
+                        (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 6)
+            cv2.putText(frame, self.lcal.status.replace("calibrating: ", "Calibrating: "),
+                        (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3)
         return frame
 
     # --------------------------------------------------------------- state --
@@ -485,14 +537,22 @@ class StudApp:
                 },
                 "studs": [dict(s) for s in self.studmap.studs],
                 "open_x": self.studmap.open_x,
+                "scanning": self.scanning,
+                "found": dict(self.found),
                 "laser": {
                     "simulated": self.rig is not None,
+                    # a laser to calibrate: simulated or the laser station
+                    "available": self.rig is not None or self.laser_link is not None,
                     "port": self.laser_link.port if self.laser_link else None,
                     "x": self.laser_x,
                     "on": self.laser_on,
                     "calibrated": self.lcal.ready,
+                    "calibrated_this_run": self.lcal.ready and self.lcal_this_run,
                     "calibrating": self.lcal.running,
                     "status": self.lcal.status,
+                    "points": [float(x) for _, x in self.lcal.points],
+                    "phase": getattr(self.lcal, "phase", None) if self.lcal.running else None,
+                    "todo": len(getattr(self.lcal, "todo", []) or []) if self.lcal.running else 0,
                     "aiming": self.aimer.running,
                     "aim_status": self.aimer.status,
                     "aim_index": self.aim_index,

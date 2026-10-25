@@ -17,12 +17,17 @@ export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, set
 
   // Re-measure on mount and whenever the window resizes.
   useLayoutEffect(() => {
-    const measure = () => imgRef.current && setRect(pictureRect(imgRef.current, frameRef.current));
+    // On the first render the parent frame's ref isn't attached yet (React
+    // attaches parent refs after child layout effects), so wait a frame.
+    const measure = () =>
+      imgRef.current && frameRef.current && setRect(pictureRect(imgRef.current, frameRef.current));
     measure();
+    const raf = requestAnimationFrame(measure);
     const img = imgRef.current;
     img.addEventListener("load", measure);
     window.addEventListener("resize", measure);
     return () => {
+      cancelAnimationFrame(raf);
       img.removeEventListener("load", measure);
       window.removeEventListener("resize", measure);
     };
