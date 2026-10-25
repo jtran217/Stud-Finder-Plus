@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { clamp01, fromClient, insidePolygon, orderCorners, pictureRect, toFramePx } from "../geometry.js";
+import { formatLength } from "../units.js";
 
 const HIT_RADIUS = 18;   // px around a corner handle that grabs it
 const LOUPE = 150;       // magnifier size in px
@@ -9,7 +10,7 @@ const DARK = "#26282b";
 
 // Drag on the video to draw a box, then drag each corner onto its tape cross.
 // Dragging inside the box moves all of it. A magnifier follows a dragged corner.
-export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, setSelected, wallSize, cornersIn }) {
+export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, setSelected, wallSize, cornersIn, unit }) {
   const drag = useRef(null);
   const loupeRef = useRef(null);
   const [rect, setRect] = useState(null);
@@ -160,14 +161,14 @@ export default function BoxEditor({ imgRef, frameRef, box, setBox, selected, set
         onPointerCancel={onPointerUp}
         aria-label="Box over the tape crosses. Drag to draw it, then drag each corner onto its cross."
       >
-        {r && box && <Box box={box} r={r} selected={selected} dragging={!!drag.current} wallSize={wallSize} cornersIn={cornersIn} />}
+        {r && box && <Box box={box} r={r} selected={selected} dragging={!!drag.current} wallSize={wallSize} cornersIn={cornersIn} unit={unit} />}
       </svg>
       <canvas ref={loupeRef} className="loupe" width={LOUPE} height={LOUPE} style={{ display: "none" }} />
     </>
   );
 }
 
-function Box({ box, r, selected, dragging, wallSize, cornersIn }) {
+function Box({ box, r, selected, dragging, wallSize, cornersIn, unit }) {
   const ordered = orderCorners(box);
   const outline = ordered.map((p) => toFramePx(p, r).join(",")).join(" ");
   const [tl, tr, , bl] = ordered.map((p) => toFramePx(p, r));
@@ -179,8 +180,8 @@ function Box({ box, r, selected, dragging, wallSize, cornersIn }) {
 
       {!dragging && (
         <>
-          <SizeLabel x={(tl[0] + tr[0]) / 2} y={(tl[1] + tr[1]) / 2} text={`${wallSize[0]} in`} />
-          <SizeLabel x={(tl[0] + bl[0]) / 2} y={(tl[1] + bl[1]) / 2} text={`${wallSize[1]} in`} />
+          <SizeLabel x={(tl[0] + tr[0]) / 2} y={(tl[1] + tr[1]) / 2} text={`${formatLength(wallSize[0], unit)} ${unit}`} />
+          <SizeLabel x={(tl[0] + bl[0]) / 2} y={(tl[1] + bl[1]) / 2} text={`${formatLength(wallSize[1], unit)} ${unit}`} />
         </>
       )}
 
@@ -206,7 +207,7 @@ function Box({ box, r, selected, dragging, wallSize, cornersIn }) {
               strokeWidth="3"
               paintOrder="stroke"
             >
-              {ix}, {iy}
+              {formatLength(ix, unit)}, {formatLength(iy, unit)}
             </text>
           </g>
         );

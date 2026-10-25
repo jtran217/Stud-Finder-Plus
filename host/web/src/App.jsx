@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useServerState } from "./api.js";
 import { clamp01, orderCorners } from "./geometry.js";
+import { useUnit } from "./units.js";
 import TopBar from "./components/TopBar.jsx";
 import VideoPanel from "./components/VideoPanel.jsx";
 import SetupSteps from "./components/SetupSteps.jsx";
@@ -22,6 +23,7 @@ const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowD
 
 export default function App() {
   const { state, online, command, click } = useServerState();
+  const [unit, setUnit] = useUnit();
 
   // Corner box being edited (setup step 2). Lives here because the video
   // (dragging) and the setup panel (save/cancel) both use it.
@@ -100,6 +102,7 @@ export default function App() {
               setBox={setBox}
               selected={selected}
               setSelected={setSelected}
+              unit={unit}
             />
           )}
         </section>
@@ -113,6 +116,8 @@ export default function App() {
                 box={box}
                 onSaveCorners={saveCorners}
                 onCancelCorners={cancelCorners}
+                unit={unit}
+                setUnit={setUnit}
               />
               <FinderPanel state={state} command={command} />
               <LaserPanel state={state} command={command} />

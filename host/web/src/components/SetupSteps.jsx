@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { UNITS, formatLength, fromInches, toInches } from "../units.js";
 
-export default function SetupSteps({ state, command, editing, box, onSaveCorners, onCancelCorners }) {
+export default function SetupSteps({ state, command, editing, box, onSaveCorners, onCancelCorners, unit, setUnit }) {
   const wallSet = state.wall_size_set;
   const needObject = state.tracker.mode === "object";
   const objectReady = state.tracker.ready;
@@ -14,7 +15,7 @@ export default function SetupSteps({ state, command, editing, box, onSaveCorners
     <section className="block" aria-labelledby="h-setup">
       <h2 id="h-setup">Setup</h2>
       <ol className="steps">
-        <WallSizeStep state={state} command={command} />
+        <WallSizeStep state={state} command={command} unit={unit} setUnit={setUnit} />
 
         <li id="step-corners" className={cornersClass}>
           <StepHead
@@ -70,11 +71,11 @@ function StepHead({ title, status }) {
   );
 }
 
-function WallSizeStep({ state, command }) {
+function WallSizeStep({ state, command, unit, setUnit }) {
   const set = state.wall_size_set;
   const [changing, setChanging] = useState(false);
-  const [width, setWidth] = useState(String(state.wall_size[0]));
-  const [height, setHeight] = useState(String(state.wall_size[1]));
+  const [width, setWidth] = useState(formatLength(state.wall_size[0], unit));
+  const [height, setHeight] = useState(formatLength(state.wall_size[1], unit));
   const widthRef = useRef(null);
   const showForm = !set || changing;
 
@@ -86,9 +87,20 @@ function WallSizeStep({ state, command }) {
   }, [showForm]);
 
   const startChange = () => {
-    setWidth(String(state.wall_size[0]));
-    setHeight(String(state.wall_size[1]));
+    setWidth(formatLength(state.wall_size[0], unit));
+    setHeight(formatLength(state.wall_size[1], unit));
     setChanging(true);
+  };
+
+  // Switching units converts what's typed, so 24 in becomes 2 ft.
+  const changeUnit = (next) => {
+    const convert = (v) => {
+      const n = parseFloat(v);
+      return n > 0 ? formatLength(toInches(n, unit), next) : v;
+    };
+    setWidth(convert(width));
+    setHeight(convert(height));
+    setUnit(next);
   };
 
   const submit = (e) => {
@@ -97,15 +109,17 @@ function WallSizeStep({ state, command }) {
     const h = parseFloat(height);
     if (!(w > 0 && h > 0)) return;
     setChanging(false);
-    command("set_wall", { width: w, height: h });
+    command("set_wall", { width: toInches(w, unit), height: toInches(h, unit) });
   };
+
+  // backend accepts 1-600 in
+  const min = fromInches(1, unit);
+  const max = fromInches(600, unit);
+  const sizeText = `${formatLength(state.wall_size[0], unit)} × ${formatLength(state.wall_size[1], unit)} ${unit}`;
 
   return (
     <li className={showForm ? "current" : "done"}>
-      <StepHead
-        title="Enter the scan area size"
-        status={showForm ? "" : `${state.wall_size[0]} × ${state.wall_size[1]} in`}
-      />
+      <StepHead title="Enter the scan area size" status={showForm ? "" : sizeText} />
       {showForm ? (
         <form className="wall-form" onSubmit={submit}>
           <p className="hint">Measure between the centers of the tape crosses.</p>
@@ -115,28 +129,39 @@ function WallSizeStep({ state, command }) {
               ref={widthRef}
               id="wall-w"
               type="number"
-              min="1"
-              max="600"
+              min={min}
+              max={max}
               step="any"
               inputMode="decimal"
               required
               value={width}
               onChange={(e) => setWidth(e.target.value)}
             />
-            <span>in</span>
+            <select
+              className="unit-select"
+              aria-label="Unit"
+              value={unit}
+              onChange={(e) => changeUnit(e.target.value)}
+            >
+              {Object.keys(UNITS).map((u) => (
+                <option key={u} value={u}>
+                  {UNITS[u].label}
+                </option>
+              ))}
+            </select>
             <label htmlFor="wall-h">Height</label>
             <input
               id="wall-h"
               type="number"
-              min="1"
-              max="600"
+              min={min}
+              max={max}
               step="any"
               inputMode="decimal"
               required
               value={height}
               onChange={(e) => setHeight(e.target.value)}
             />
-            <span>in</span>
+            <span>{unit}</span>
           </div>
           <div className="row">
             <button type="submit" className="primary">

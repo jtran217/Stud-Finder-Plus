@@ -64,7 +64,10 @@ def resolve_port(explicit=None, exclude=()):
     exists right now), then the first board found that isn't in `exclude`."""
     if explicit:
         return explicit
-    exclude = (*exclude, configured_port("laser"))   # never grab the laser station
+    if not exclude and len(list_ports()) > 1:
+        # Two boards and we don't know which is the laser station yet (e.g.
+        # start.sh's port check): ask them, so the Uno never gets picked here.
+        exclude = (find_laser_port(),)
     saved = configured_port("stud")
     if saved and os.path.exists(saved) and saved not in exclude:
         return saved
@@ -96,27 +99,30 @@ def _wait_for(ser, wanted, timeout):
     return False
 
 
-def find_laser_port():
-    """Laser station port: host/ports.json "laser" if that port exists,
-    else the board that answers ID with "ID LASER". None if not found."""
-    saved = configured_port("laser")
-    if saved and os.path.exists(saved):
-        return saved
+def is_laser_station(port):
+    """Asks the board on `port` who it is. Opening resets an Uno, which is fine."""
     import serial
 
-    for port in list_ports():
-        if port_users(port):
-            continue
-        try:
-            with serial.Serial(port, BAUD, timeout=0.1) as ser:
-                # Uno/Nano reset when the port opens and print READY on boot.
-                found = _wait_for(ser, "READY LASER", 2.5)
-                if not found:
-                    ser.write(b"ID\n")
-                    found = _wait_for(ser, "ID LASER", 1.0)
-        except (OSError, serial.SerialException):
-            continue
-        if found:
+    if not os.path.exists(port) or port_users(port):
+        return False
+    try:
+        with serial.Serial(port, BAUD, timeout=0.1) as ser:
+            # Uno/Nano reset when the port opens and print READY on boot.
+            if _wait_for(ser, "READY LASER", 2.5):
+                return True
+            ser.write(b"ID\n")
+            return _wait_for(ser, "ID LASER", 1.0)
+    except (OSError, serial.SerialException):
+        return False
+
+
+def find_laser_port():
+    """Laser station port, or None. Tries the one saved in host/ports.json
+    first, but checks it: port names can swap when boards change sockets."""
+    saved = configured_port("laser")
+    ports = list_ports()
+    for port in ([saved] if saved in ports else []) + [p for p in ports if p != saved]:
+        if is_laser_station(port):
             save_port("laser", port)
             return port
     return None

@@ -15,7 +15,7 @@ function useStreamUrl(online) {
   return `${STILL ? "/snapshot.jpg" : "/stream.mjpg"}?${n}`;
 }
 
-export default function VideoPanel({ state, online, command, click, editing, box, setBox, selected, setSelected }) {
+export default function VideoPanel({ state, online, command, click, editing, box, setBox, selected, setSelected, unit }) {
   const imgRef = useRef(null);
   const frameRef = useRef(null);
   const src = useStreamUrl(online);
@@ -61,6 +61,7 @@ export default function VideoPanel({ state, online, command, click, editing, box
             selected={selected}
             setSelected={setSelected}
             wallSize={state.wall_size}
+            unit={unit}
             cornersIn={state.corners_in}
           />
         )}

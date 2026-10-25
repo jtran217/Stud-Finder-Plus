@@ -323,6 +323,17 @@ class StudApp:
                 self.laser_on = not self.laser_on
                 self.send(f"L {int(self.laser_on)}")
 
+    def _laser_station_restarted(self):
+        # A reset Uno calls wherever the motor is "step 0", so the old table is
+        # off by however far it had turned. Make the user recalibrate.
+        self.lcal.points = []
+        self.lcal.settler = None
+        self.lcal.status = "laser station restarted, press Calibrate"
+        self.stepper.pos = None
+        self.aimer.settler = None
+        self.laser_on = False
+        self.log("laser station restarted (USB drop or power dip?): recalibrate the laser")
+
     # ----------------------------------------------------- per-frame work --
     def process(self, frame, now=None):
         """Update everything from one camera frame. Returns the annotated frame."""
@@ -381,6 +392,8 @@ class StudApp:
                     _, line = self.laser_link.events.get()
                     if not line.startswith("OK"):
                         self.log(f"laser station: {line}")
+                    if line.startswith(("READY", "serial reconnected")):
+                        self._laser_station_restarted()
 
             # --- stud signal events ---
             while not self.link.events.empty():

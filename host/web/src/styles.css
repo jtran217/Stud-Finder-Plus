@@ -231,3 +231,14 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+.unit-select {
+  font: inherit;
+  font-size: var(--fs-0);
+  font-weight: 600;
+  padding: 0.35rem 0.4rem;
+  border: 1.5px solid var(--graphite);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--graphite);
+}
