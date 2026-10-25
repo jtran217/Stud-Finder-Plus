@@ -149,7 +149,7 @@ export default function App() {
       <TopBar state={state} onRestart={hardRestart} />
       {!online && (
         <div className="offline">
-          Lost contact with the Stud Mapper program. Check that <code>web.py</code> is still running; this page
+          Lost contact with the Stud Finder Plus program. Check that <code>web.py</code> is still running; this page
           reconnects by itself.
         </div>
       )}
@@ -219,7 +219,7 @@ export default function App() {
             </>
           ) : (
             <p className="card sub connecting">
-              <Spinner type="ball-pulse" tone="dark" size="xs" /> Connecting to Stud Mapper…
+              <Spinner type="ball-pulse" tone="dark" size="xs" /> Connecting to Stud Finder Plus…
             </p>
           )}
         </aside>

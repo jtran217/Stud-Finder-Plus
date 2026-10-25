@@ -26,7 +26,7 @@ export default function TopBar({ state, onRestart }) {
 
   return (
     <header className="topbar">
-      <h1 className="brand">Stud Mapper</h1>
+      <h1 className="brand">Stud Finder Plus</h1>
       <div className="topbar-right">
       <ul className="status" aria-label="Connections">
         {[camera, signal, laser].map(([cls, text]) => (

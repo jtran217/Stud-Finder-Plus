@@ -1,4 +1,4 @@
-"""Stud Mapper in the browser.
+"""Stud Finder Plus in the browser.
 
   python host/web.py --tape                    # then open http://localhost:8000
   python host/web.py --tape --fake-laser       # with the simulated laser
@@ -34,7 +34,7 @@ CONTENT_TYPES = {
     ".png": "image/png",
     ".ico": "image/x-icon",
 }
-NOT_BUILT = b"""<!doctype html><meta charset="utf-8"><title>Stud Mapper</title>
+NOT_BUILT = b"""<!doctype html><meta charset="utf-8"><title>Stud Finder Plus</title>
 <p style="font:16px sans-serif;margin:2rem">The web page isn't built yet. Run
 <code>cd host/web && npm install && npm run build</code>, then reload.</p>"""
 STREAM_WIDTH = 1280      # video is scaled to this width for the browser
@@ -174,7 +174,7 @@ def main():
     server = ThreadingHTTPServer((args.host, args.http_port), make_handler(app, hub))
     server.daemon_threads = True
     url = f"http://localhost:{args.http_port}"
-    print(f"Stud Mapper running at {url}  (Ctrl+C to stop)")
+    print(f"Stud Finder Plus running at {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         webbrowser.open(url)
     try:
