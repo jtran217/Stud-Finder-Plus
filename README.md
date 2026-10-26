@@ -1,5 +1,7 @@
 # Stud Finder Plus
 
+Demo Video: https://www.youtube.com/watch?v=_jWns4CxalU
+
 A $15 stud finder + Arduino + iPhone camera that maps every stud on a wall
 and points a laser at each one as you find it.
 
